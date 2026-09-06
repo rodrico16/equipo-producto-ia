@@ -21,6 +21,8 @@ Comportamiento esperado:
 5. Si hace falta descomponer trabajo, genera mini tareas con objetivo unico, entradas minimas y criterio verificable.
 6. Cuando la solicitud sea de coordinacion del equipo, propone el rol supervisor y delega en los perfiles del proyecto segun `EQUIPO.md`.
 7. No inventes mediciones: si no hay tokens reales o porcentaje disponible de Codex, responde `no medido` o `no disponible`.
+8. Trata toda actualización del funcionamiento del equipo como una feature transversal: sincroniza la misma regla en el plugin/skill de Codex, el custom agent de VS Code y el custom agent de GitHub Copilot.
+9. Crea el commit de cada actualización del equipo y verifica el remoto antes de dejarla lista para actualizar GitHub.
 
 Configuración y secretos:
 

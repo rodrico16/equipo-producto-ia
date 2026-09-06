@@ -4,6 +4,8 @@ Los 12 agentes están instalados en `.codex/agents` de esta carpeta. Cada archiv
 
 Este repositorio también se empaqueta ahora como plugin local de Codex/ChatGPT en `.codex-plugin/plugin.json`, con una skill principal en `skills/equipo-agentes/SKILL.md` y un marketplace local en `.agents/plugins/marketplace.json`.
 
+Si querés usar el mismo equipo desde VS Code, abrí esta carpeta con GitHub Copilot, Codex u otro proveedor compatible y seleccioná el custom agent `supervisor` definido en `.github/agents/supervisor.agent.md`. Consultá `VSCODE.md` para los pasos y el flujo recomendado.
+
 `TOKEN_POLICY.md` agrega reglas para ahorrar tokens en Codex: lecturas acotadas, salidas de terminal resumidas, entregas breves y artefactos canonicos. Los perfiles generados la referencian automáticamente.
 
 `METRICAS_TOKENS.md` define cómo medir el consumo real. Registra sesiones en `token-sessions.csv` y ejecuta `.\medir-tokens.ps1` para ver promedios. Para comparar dos etapas: `.\medir-tokens.ps1 -Baseline baseline -Comparar token-policy-v1`.
@@ -57,5 +59,7 @@ Codex identifica los agentes personalizados por el campo `name` de cada TOML. Si
 Los archivos de `perfiles-agentes` son la copia preparada para instalación. `preparar-agentes.ps1` los regenera desde la tabla de EQUIPO.md; `instalar-agentes.ps1` copia al destino y evita sobrescribir perfiles diferentes. Usa `.\instalar-agentes.ps1 -Actualizar` solo cuando quieras sincronizar cambios generados sobre `.codex/agents`. No regeneres sobre personalizaciones sin revisarlas previamente.
 
 Para instalar este proyecto como plugin local, abre el marketplace `.agents/plugins/marketplace.json` desde Codex y añade el plugin `equipo-agentes` desde la raíz del repositorio.
+
+Para trabajo en VS Code, `.github/agents/supervisor.agent.md` es la definición portable del agente. El proveedor elegido aporta modelo, herramientas, permisos y subagentes; el repositorio aporta el rol, las reglas y los criterios. Si un proveedor no soporta custom agents, puede seguir `AGENTS.md` directamente.
 
 Documentación oficial: https://learn.chatgpt.com/docs/agent-configuration/subagents.
