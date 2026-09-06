@@ -1,0 +1,29 @@
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# Local telemetry and potentially sensitive session data
+token-sessions.csv
+
+# User-specific/editor/OS files
+.idea/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
+
+# Build output
+**/bin/
+**/obj/

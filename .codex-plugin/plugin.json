@@ -1,0 +1,21 @@
+{
+  "name": "equipo-agentes",
+  "version": "1.0.0",
+  "description": "Equipo de producto y tecnología para definir, coordinar y verificar entregas del proyecto Agentes.",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Equipo de agentes",
+    "shortDescription": "Equipo de producto para coordinar y verificar entregas.",
+    "longDescription": "Usa los roles y reglas del proyecto Agentes como un equipo de producto y tecnología para definir problemas, coordinar trabajo y verificar entregas.",
+    "developerName": "Proyecto Agentes",
+    "category": "Productivity",
+    "capabilities": [
+      "Coordinar un equipo de producto",
+      "Aplicar reglas del proyecto",
+      "Verificar entregas",
+      "Arrancar productos nuevos en GitHub y ChatGPT",
+      "Hacer research inicial de productos similares"
+    ],
+    "defaultPrompt": "Ayudame a coordinar este trabajo usando el equipo de agentes del proyecto. Si es un producto nuevo, asume por defecto que debe crearse en la cuenta de GitHub del usuario y dentro de un proyecto de ChatGPT asociado; además, haz research acotado de productos similares antes de diseñar la solución."
+  }
+}
