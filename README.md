@@ -10,7 +10,7 @@ Repositorio base para coordinar un equipo de agentes de producto y tecnología e
 - Métricas y medición de uso en `METRICAS_TOKENS.md`, `token-sessions.csv` y `medir-tokens.ps1`.
 - Empaquetado como plugin local de Codex/ChatGPT en `.codex-plugin/plugin.json`.
 - Custom agent portable para VS Code y otros proveedores compatibles en `.github/agents/supervisor.agent.md`.
-- Ayudas operativas en `instalar-agentes.ps1`, `instalar-global-agentes.ps1`, `preparar-agentes.ps1`, `iniciar-ssh-github.ps1` y `validar_agentes.py`.
+- Ayudas operativas en `instalar-agentes.ps1`, `instalar-agentes.sh`, `instalar-global-agentes.ps1`, `instalar-global-agentes.sh`, `preparar-agentes.ps1`, `iniciar-ssh-github.ps1` y `validar_agentes.py`.
 - Un visor auxiliar en `AgentInteractionViewer/` para inspección local.
 
 ## Capacidades del repositorio
@@ -41,6 +41,18 @@ Este proyecto está pensado para:
 .\instalar-agentes.ps1 -Actualizar
 ```
 
+En Linux o macOS:
+
+```sh
+./instalar-agentes.sh
+```
+
+Y para sincronizar perfiles ya instalados:
+
+```sh
+./instalar-agentes.sh --actualizar
+```
+
 ### Instalación global
 
 Si querés usar el mismo equipo desde otras carpetas:
@@ -53,6 +65,18 @@ Para sincronizar una versión nueva:
 
 ```powershell
 .\instalar-global-agentes.ps1 -Actualizar
+```
+
+En Linux o macOS:
+
+```sh
+./instalar-global-agentes.sh
+```
+
+O para sincronizar perfiles globales ya existentes:
+
+```sh
+./instalar-global-agentes.sh --actualizar
 ```
 
 ### Preparación de perfiles
@@ -148,6 +172,7 @@ Los números deben salir de medición real. Si no hay datos, reportá `no medido
 - `skills/equipo-agentes/SKILL.md`: skill principal del equipo.
 - `.codex-plugin/plugin.json`: definición del plugin local.
 - `.github/agents/supervisor.agent.md`: custom agent portable.
+- `instalar-agentes.sh` y `instalar-global-agentes.sh`: instalación portable en Unix-like.
 
 ## Recomendación de trabajo
 

@@ -5,8 +5,7 @@ Este repositorio incluye un custom agent agnostico al proveedor: `.github/agents
 ## Instalación del custom agent
 
 1. Abrí VS Code.
-2. Abrí esta carpeta desde `File > Open Folder...`:
-   `C:\Users\rodri\OneDrive\Documentos\ChatGPT\Agentes`
+2. Abrí esta carpeta desde `File > Open Folder...` en Windows, o desde `File > Open Folder...` / `code .` en Linux.
 3. Instalá o habilitá el proveedor que quieras usar, por ejemplo GitHub Copilot o Codex.
 4. Abrí Chat y seleccioná `supervisor` en el selector de agentes.
 5. Si no aparece, ejecutá `Chat: Open Customizations` y revisá los agentes del workspace, o abrí el diagnóstico de personalizaciones.
@@ -31,6 +30,12 @@ Desde una terminal también podés comprobar los proveedores instalados:
 code --list-extensions | Select-String -Pattern "copilot|codex"
 ```
 
+En Linux o macOS:
+
+```sh
+code --list-extensions | grep -E "copilot|codex"
+```
+
 Si el comando no devuelve nada, instalá o habilitá GitHub Copilot, Codex u otro proveedor compatible y repetí la recarga.
 
 ## Qué reutiliza VS Code
@@ -46,7 +51,10 @@ Si el comando no devuelve nada, instalá o habilitá GitHub Copilot, Codex u otr
 
 1. Abrí esta carpeta en VS Code y confirmá que el proveedor esté trabajando sobre ella.
 2. Seleccioná el custom agent `supervisor` y pedile que delegue según `EQUIPO.md`.
-3. Para tareas de desarrollo y pruebas, pedile que:
+3. Si querés instalar los perfiles del equipo en tu usuario local, ejecutá:
+   - Windows: `.\instalar-global-agentes.ps1`
+   - Linux o macOS: `./instalar-global-agentes.sh`
+4. Para tareas de desarrollo y pruebas, pedile que:
    - lea solo los archivos relevantes,
    - cambie solo los archivos asignados,
    - ejecute las pruebas necesarias,

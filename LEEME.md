@@ -46,10 +46,22 @@ Para usar este equipo en cualquier proyecto, instala los perfiles como agentes p
 .\instalar-global-agentes.ps1
 ```
 
+En Linux o macOS:
+
+```sh
+./instalar-global-agentes.sh
+```
+
 Si ya existen perfiles globales y querés sincronizar esta versión:
 
 ```powershell
 .\instalar-global-agentes.ps1 -Actualizar
+```
+
+En Linux o macOS:
+
+```sh
+./instalar-global-agentes.sh --actualizar
 ```
 
 Después abrí cualquier proyecto de Codex y pedí algo como:

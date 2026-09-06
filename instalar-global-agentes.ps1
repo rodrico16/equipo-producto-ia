@@ -22,7 +22,7 @@ New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
 foreach ($agentName in $expectedNames) {
     $source = Join-Path $sourceDirectory ($agentName + '.toml')
     $destination = Join-Path $destinationDirectory ($agentName + '.toml')
-    if ($Actualizar -or -not (Test-Path -LiteralPath $destination)) { [System.IO.File]::Copy($source, $destination, $true) }
+    if ($Actualizar -or -not (Test-Path -LiteralPath $destination)) { Copy-Item -LiteralPath $source -Destination $destination -Force }
     if ((Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $destination).Hash) { throw "No coincide: $destination" }
 }
 
