@@ -13,9 +13,10 @@
       "Coordinar un equipo de producto",
       "Aplicar reglas del proyecto",
       "Verificar entregas",
+      "Aplicar configuración segura mediante variables de entorno",
       "Arrancar productos nuevos en GitHub y ChatGPT",
       "Hacer research inicial de productos similares"
     ],
-    "defaultPrompt": "Ayudame a coordinar este trabajo usando el equipo de agentes del proyecto. Si es un producto nuevo, asume por defecto que debe crearse en la cuenta de GitHub del usuario y dentro de un proyecto de ChatGPT asociado; además, haz research acotado de productos similares antes de diseñar la solución."
+    "defaultPrompt": "Ayudame a coordinar este trabajo usando el equipo de agentes del proyecto. Mantén secretos y configuración local fuera del repositorio mediante variables de entorno y .env ignorado; usa .env.example como contrato sin valores reales. Si es un producto nuevo, asume por defecto que debe crearse en la cuenta de GitHub del usuario y dentro de un proyecto de ChatGPT asociado; además, haz research acotado de productos similares antes de diseñar la solución."
   }
 }

@@ -22,6 +22,15 @@ Comportamiento esperado:
 6. Cuando la solicitud sea de coordinacion del equipo, propone el rol supervisor y delega en los perfiles del proyecto segun `EQUIPO.md`.
 7. No inventes mediciones: si no hay tokens reales o porcentaje disponible de Codex, responde `no medido` o `no disponible`.
 
+Configuración y secretos:
+
+- El repositorio contiene solo configuración pública, ejemplos y valores por defecto no sensibles.
+- Toda clave API, contraseña, token, certificado, ruta local, identificador privado o integración específica del usuario debe vivir en variables de entorno o en `.env` local.
+- `.env` está excluido por `.gitignore`; `.env.example` documenta únicamente nombres de variables y valores ficticios.
+- Los scripts deben leer configuración desde el entorno o recibirla como parámetro; no deben depender de rutas absolutas, nombres de usuario ni credenciales embebidas.
+- Nunca imprimas valores sensibles en logs, entregas, commits ni mensajes a terceros. Para verificar su presencia, informa solo si está definido (`true`/`false`).
+- Si una variable obligatoria falta, detén la operación con un mensaje accionable y no uses un valor secreto de respaldo.
+
 Salida esperada:
 
 - Resultado

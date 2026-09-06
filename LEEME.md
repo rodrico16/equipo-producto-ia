@@ -14,6 +14,8 @@ Cuando el supervisor pida aprobación, debe incluir un checkpoint con tiempo tra
 
 No guardes claves API, contraseñas, tokens, certificados ni claves SSH en el repositorio. Usa variables de entorno o un archivo `.env` local; `.env` y los datos locales de sesiones están excluidos por `.gitignore`. El archivo `.env.example` solo documenta nombres de variables y nunca debe contener valores reales.
 
+El plugin aplica esta separación en cada producto: configuración pública en el repositorio y configuración sensible o específica del entorno en variables de entorno o `.env` local. Los scripts deben aceptar rutas y valores variables por parámetros o entorno, sin asumir nombres de usuario ni carpetas concretas.
+
 ## Primera comprobación
 
 Abrí una sesión nueva de Codex usando esta carpeta como proyecto y enviá:
