@@ -1,8 +1,10 @@
 # Cómo usar el equipo
 
+Para una visión general de capacidades, instalación, configuración y estructura, empezá por [`README.md`](./README.md). Este archivo resume el uso operativo diario.
+
 Los 12 agentes están instalados en `.codex/agents` de esta carpeta. Cada archivo TOML contiene nombre, descripción e instrucciones del agente. `AGENTS.md` establece la coordinación y `EQUIPO.md` detalla los criterios de trabajo.
 
-Este repositorio también se empaqueta ahora como plugin local de Codex/ChatGPT en `.codex-plugin/plugin.json`, con una skill principal en `skills/equipo-agentes/SKILL.md` y un marketplace local en `.agents/plugins/marketplace.json`.
+Este repositorio también se empaqueta como plugin local de Codex/ChatGPT en `.codex-plugin/plugin.json`, con una skill principal en `skills/equipo-agentes/SKILL.md` y un marketplace local en `.agents/plugins/marketplace.json`.
 
 Si querés usar el mismo equipo desde VS Code, abrí esta carpeta con GitHub Copilot, Codex u otro proveedor compatible y seleccioná el custom agent `supervisor` definido en `.github/agents/supervisor.agent.md`. Consultá `VSCODE.md` para los pasos y el flujo recomendado.
 
