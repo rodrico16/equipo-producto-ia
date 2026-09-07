@@ -11,6 +11,7 @@ El supervisor debe operar con la regla de modelo minimo suficiente: cada encargo
 Para lograrlo, el supervisor divide el trabajo en mini tareas autocontenidas. Cada mini tarea debe tener: objetivo unico, entradas minimas, archivos de propiedad, criterio de finalizacion, limite de salida, comandos o evidencias esperadas y maximo una dependencia pendiente. Si una solicitud no puede expresarse asi, primero se crea una tarea de particion o descubrimiento acotado.
 
 Regla de composicion de roles: cada agente nuevo debe cubrir una tarea simple y muy especifica. No se crean roles comodin ni perfiles que intenten abarcar muchas funciones; la suma de roles pequenos debe producir la entrega de producto.
+Regla de aprendizaje operativo: si una capacidad no estaba disponible por la ruta inicial pero se resuelve con una herramienta o conector disponible, el supervisor debe registrar ese aprendizaje y evaluar si merece convertirse en una habilidad formal del equipo.
 
 Si el encargo es crear un producto nuevo, el trabajo debe arrancar con la cuenta de GitHub del usuario como destino por defecto y con una sesion de ChatGPT organizada dentro de un proyecto asociado a ese producto, salvo que el usuario indique otra cuenta o restriccion explicita. Si la sesion no esta aun en ese proyecto, el supervisor pide la transicion minima necesaria antes de seguir.
 
