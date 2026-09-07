@@ -4,7 +4,7 @@ Repositorio base para coordinar un equipo de agentes de producto y tecnología e
 
 ## Qué incluye
 
-- 12 perfiles de agentes en `.codex/agents` y su copia preparada en `perfiles-agentes/`.
+- 13 perfiles de agentes en `.codex/agents` y su copia preparada en `perfiles-agentes/`.
 - Reglas de coordinación en `AGENTS.md` y criterios de trabajo en `EQUIPO.md`.
 - Política de ahorro de contexto en `TOKEN_POLICY.md`.
 - Métricas y medición de uso en `METRICAS_TOKENS.md`, `token-sessions.csv` y `medir-tokens.ps1`.
@@ -170,6 +170,7 @@ Los números deben salir de medición real. Si no hay datos, reportá `no medido
 - `TOKEN_POLICY.md`: política de contexto y salidas.
 - `METRICAS_TOKENS.md`: cómo medir uso.
 - `skills/equipo-agentes/SKILL.md`: skill principal del equipo.
+- `skills/equipo-agentes/push-github-ssh.md`: procedimiento seguro para publicar en GitHub por SSH.
 - `.codex-plugin/plugin.json`: definición del plugin local.
 - `.github/agents/supervisor.agent.md`: custom agent portable.
 - `instalar-agentes.sh` y `instalar-global-agentes.sh`: instalación portable en Unix-like.

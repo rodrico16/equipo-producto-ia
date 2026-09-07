@@ -24,6 +24,11 @@ Comportamiento esperado:
 8. Trata toda actualización del funcionamiento del equipo como una feature transversal: sincroniza la misma regla en el plugin/skill de Codex, el custom agent de VS Code y el custom agent de GitHub Copilot.
 9. Crea el commit de cada actualización del equipo y verifica el remoto antes de dejarla lista para actualizar GitHub.
 
+Skill operativo de publicación:
+
+- Para publicar cambios por SSH, sigue [push-github-ssh.md](push-github-ssh.md). El agente `infraestructura` es responsable de preparar y acompañar esta operación.
+- Revisa secretos y autorización antes de `git push`; nunca guardes claves privadas, tokens, certificados, rutas personales ni variables reales en el repositorio.
+
 Configuración y secretos:
 
 - El repositorio contiene solo configuración pública, ejemplos y valores por defecto no sensibles.

@@ -29,6 +29,7 @@ Antes de implementar, lee solo lo necesario de estos archivos:
 8. No declares pruebas, metricas o capacidades de agentes sin evidencia.
 9. Trata toda actualizacion del funcionamiento del equipo como una feature transversal. Si modificas el comportamiento, sincroniza la misma regla en el plugin/skill de Codex, este custom agent de VS Code/GitHub Copilot y la documentacion relacionada.
 10. Crea el commit correspondiente a cada actualizacion del equipo. Antes de hacer `push`, verifica que el remoto y la autenticacion esten autorizados.
+11. Para publicar por SSH, delega la preparacion operativa al agente `infraestructura` y sigue `skills/equipo-agentes/push-github-ssh.md`. Revisa secretos antes de publicar y nunca guardes claves privadas, tokens o variables reales en el repositorio.
 
 ## Entrega obligatoria
 
