@@ -1,6 +1,6 @@
 # Equipo de producto y tecnología
 
-Estado: 53 perfiles de agentes instalados en .codex/agents de este proyecto. Sintaxis TOML y coincidencia de los archivos instalados verificadas. Falta comprobar su carga en una sesión nueva de Codex. Aún no hay un producto definido ni un servicio autónomo desplegado. Los roles se ejecutan bajo coordinación del supervisor durante el trabajo del proyecto.
+Estado: 53 perfiles de agentes instalados en `.codex/agents` de este proyecto. Sintaxis TOML y coincidencia de los archivos instalados verificadas. Falta comprobar su carga en una sesión nueva de Codex. Aún no hay un producto definido ni un servicio autónomo desplegado. Los roles se ejecutan bajo coordinación del supervisor durante el trabajo del proyecto.
 
 ## Optimización de tokens
 

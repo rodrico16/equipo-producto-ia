@@ -2,6 +2,12 @@
 
 Este repositorio incluye un custom agent agnostico al proveedor: `.github/agents/supervisor.agent.md`. VS Code lo detecta como agente del workspace y puede ejecutarlo con GitHub Copilot, Codex u otro proveedor compatible con custom agents.
 
+## Estado actual
+
+- El equipo local mantiene 53 perfiles instalados en `.codex/agents`.
+- La estructura TOML ya fue validada de forma local.
+- La carga efectiva del agente `supervisor` depende de que el proveedor del workspace soporte custom agents y los haya leído en esta sesión.
+
 ## Instalación del custom agent
 
 1. Abrí VS Code.
@@ -46,6 +52,7 @@ Si el comando no devuelve nada, instalá o habilitá GitHub Copilot, Codex u otr
 - `METRICAS_TOKENS.md`: medición de uso.
 - `.codex-plugin/plugin.json`: empaquetado local del proyecto.
 - `skills/equipo-agentes/SKILL.md`: comportamiento principal del equipo.
+- `README.md` y `LEEME.md`: estado actual, instalación y uso resumido.
 
 ## Flujo recomendado
 
