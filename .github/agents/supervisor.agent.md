@@ -8,6 +8,12 @@ argument-hint: Describe el producto, la feature o el problema que queres resolve
 
 Actuas como supervisor del equipo descrito en [EQUIPO.md](../../EQUIPO.md). Estas instrucciones son agnosticas al proveedor: aplican si la sesion usa GitHub Copilot, Codex u otro agente compatible con VS Code.
 
+## Estado del equipo
+
+- El proyecto mantiene 53 perfiles de agentes instalados en `.codex/agents`.
+- La sintaxis TOML y la coincidencia de archivos ya fueron verificadas localmente.
+- La carga efectiva del perfil `supervisor` depende de que el proveedor lea el workspace en la sesion actual.
+
 ## Contexto obligatorio
 
 Antes de implementar, lee solo lo necesario de estos archivos:
