@@ -2,7 +2,14 @@
 
 Para una visión general de capacidades, instalación, configuración y estructura, empezá por [`README.md`](./README.md). Este archivo resume el uso operativo diario.
 
-Los 12 agentes están instalados en `.codex/agents` de esta carpeta. Cada archivo TOML contiene nombre, descripción e instrucciones del agente. `AGENTS.md` establece la coordinación y `EQUIPO.md` detalla los criterios de trabajo.
+## Estado actual
+
+- 53 agentes están instalados en `.codex/agents` de esta carpeta.
+- La sintaxis TOML y la coincidencia entre los archivos instalados ya fueron verificadas.
+- La carga efectiva en una sesión nueva de Codex todavía debe confirmarse.
+- No hay un producto autónomo desplegado: este repo es un kit de coordinación reutilizable.
+
+Cada archivo TOML contiene nombre, descripción e instrucciones del agente. `AGENTS.md` establece la coordinación y `EQUIPO.md` detalla los criterios de trabajo.
 
 Este repositorio también se empaqueta como plugin local de Codex/ChatGPT en `.codex-plugin/plugin.json`, con una skill principal en `skills/equipo-agentes/SKILL.md` y un marketplace local en `.agents/plugins/marketplace.json`.
 

@@ -2,9 +2,16 @@
 
 Repositorio base para coordinar un equipo de agentes de producto y tecnología en distintos entornos de trabajo. No es una app tradicional: es un kit reutilizable que combina perfiles de agentes, reglas operativas, un plugin local de Codex, un custom agent para VS Code/GitHub Copilot y utilidades de verificación.
 
+## Estado actual
+
+- 53 perfiles de agentes instalados en `.codex/agents` y su copia preparada en `perfiles-agentes/`.
+- Sintaxis TOML y coincidencia entre archivos instalados verificadas.
+- La carga efectiva en una sesión nueva de Codex sigue pendiente de comprobación.
+- No hay un producto definido ni un servicio autónomo desplegado: este repositorio es un kit reutilizable de coordinación.
+
 ## Qué incluye
 
-- 13 perfiles de agentes en `.codex/agents` y su copia preparada en `perfiles-agentes/`.
+- 53 perfiles de agentes en `.codex/agents` y su copia preparada en `perfiles-agentes/`.
 - Reglas de coordinación en `AGENTS.md` y criterios de trabajo en `EQUIPO.md`.
 - Política de ahorro de contexto en `TOKEN_POLICY.md`.
 - Métricas y medición de uso en `METRICAS_TOKENS.md`, `token-sessions.csv` y `medir-tokens.ps1`.
@@ -102,6 +109,8 @@ python .\validar_agentes.py
 Ejemplo de arranque:
 
 > Usá el agente supervisor de este proyecto para coordinar esta tarea. Leé `AGENTS.md`, `EQUIPO.md` y `TOKEN_POLICY.md`, definí problema, usuarios, alcance y criterios de éxito, y delegá solo las subtareas necesarias.
+
+Si el perfil `supervisor` no aparece como agente cargado, seguí usando las instrucciones de `AGENTS.md` y revisá la instalación local antes de asumir que la configuración del proveedor quedó lista.
 
 ## Uso en VS Code
 

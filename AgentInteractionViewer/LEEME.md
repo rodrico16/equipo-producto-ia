@@ -2,6 +2,12 @@
 
 Aplicación Windows local para inspeccionar cómo está coordinado el equipo de agentes del proyecto.
 
+## Estado actual
+
+- Detecta los 53 agentes instalados en `.codex/agents`.
+- Puede mostrar referencias entre perfiles y menciones en la documentación del proyecto.
+- No lee telemetría interna de Codex ni conversaciones privadas no expuestas como archivos.
+
 ## Ejecutar
 
 ```powershell
