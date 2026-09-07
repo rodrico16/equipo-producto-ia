@@ -1,6 +1,6 @@
 # Equipo de producto y tecnología
 
-Estado: 53 perfiles de agentes instalados en `.codex/agents` de este proyecto. Sintaxis TOML y coincidencia de los archivos instalados verificadas. Falta comprobar su carga en una sesión nueva de Codex. Aún no hay un producto definido ni un servicio autónomo desplegado. Los roles se ejecutan bajo coordinación del supervisor durante el trabajo del proyecto.
+Estado: 83 perfiles de agentes instalados en `.codex/agents` de este proyecto. Sintaxis TOML y coincidencia de los archivos instalados verificadas. Falta comprobar su carga en una sesión nueva de Codex. Aún no hay un producto definido ni un servicio autónomo desplegado. Los roles se ejecutan bajo coordinación del supervisor durante el trabajo del proyecto.
 
 ## Optimización de tokens
 
@@ -45,6 +45,8 @@ En cada solicitud de aprobación al usuario, el supervisor debe mostrar un check
 Estos son los agentes preferidos para el trabajo diario: `requisitos`, `casos_uso`, `alcance`, `marca`, `copy`, `onboarding`, `retencion`, `flujo`, `errores`, `evaluacion`, `pantalla`, `componentes`, `estado`, `backend`, `frontend`, `integraciones`, `contratos`, `estructura`, `entorno`, `despliegue`, `operacion`, `amenazas`, `acceso`, `abuso`, `casos`, `ejecucion`, `regresion`, `eventos`, `transformacion`, `reporte`, `catalogos`, `usuarios`, `reglas`, `definicion`, `formula`, `accion`, `identidad`, `rituales` y `consistencia`.
 
 Los agentes anteriores quedan como capa de transición y compatibilidad. El supervisor debe preferir los agentes simples nuevos cuando el trabajo pueda dividirse en tareas pequenas.
+
+Agentes simples ampliados: `investigacion`, `priorizacion`, `roadmap`, `pricing`, `growth`, `soporte`, `documentacion`, `migraciones`, `performance`, `observabilidad`, `backup`, `recovery`, `autenticacion`, `autorizacion`, `privacidad`, `auditoria`, `secretos`, `compliance`, `calidad_datos`, `modelado_datos`, `consulta_datos`, `dashboards`, `automatizacion`, `scripts`, `integracion_api`, `webhooks`, `tests_e2e`, `accesibilidad`, `localizacion` y `feature_flags`.
 
 ## Flujo de trabajo
 

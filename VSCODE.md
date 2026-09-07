@@ -4,7 +4,7 @@ Este repositorio incluye un custom agent agnostico al proveedor: `.github/agents
 
 ## Estado actual
 
-- El equipo local mantiene 53 perfiles instalados en `.codex/agents`.
+- El equipo local mantiene 83 perfiles instalados en `.codex/agents`.
 - La estructura TOML ya fue validada de forma local.
 - La carga efectiva del agente `supervisor` depende de que el proveedor del workspace soporte custom agents y los haya leído en esta sesión.
 

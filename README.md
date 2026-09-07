@@ -4,14 +4,14 @@ Repositorio base para coordinar un equipo de agentes de producto y tecnología e
 
 ## Estado actual
 
-- 53 perfiles de agentes instalados en `.codex/agents` y su copia preparada en `perfiles-agentes/`.
+- 83 perfiles de agentes instalados en `.codex/agents` y su copia preparada en `perfiles-agentes/`.
 - Sintaxis TOML y coincidencia entre archivos instalados verificadas.
 - La carga efectiva en una sesión nueva de Codex sigue pendiente de comprobación.
 - No hay un producto definido ni un servicio autónomo desplegado: este repositorio es un kit reutilizable de coordinación.
 
 ## Qué incluye
 
-- 53 perfiles de agentes en `.codex/agents` y su copia preparada en `perfiles-agentes/`.
+- 83 perfiles de agentes en `.codex/agents` y su copia preparada en `perfiles-agentes/`.
 - Reglas de coordinación en `AGENTS.md` y criterios de trabajo en `EQUIPO.md`.
 - Política de ahorro de contexto en `TOKEN_POLICY.md`.
 - Métricas y medición de uso en `METRICAS_TOKENS.md`, `token-sessions.csv` y `medir-tokens.ps1`.

@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
-$agentNames = @('supervisor','product_owner','arquitectura','infraestructura','seguridad','ux','ui','ingenieria','qa','sre','administracion_nocode','kpis','datos_bi')
+$agentNames = @('supervisor','product_owner','arquitectura','infraestructura','seguridad','ux','ui','ingenieria','qa','sre','administracion_nocode','kpis','datos_bi','requisitos','casos_uso','alcance','marca','copy','onboarding','retencion','flujo','errores','evaluacion','pantalla','componentes','estado','backend','frontend','integraciones','contratos','estructura','entorno','despliegue','operacion','amenazas','acceso','abuso','casos','ejecucion','regresion','eventos','transformacion','reporte','catalogos','usuarios','reglas','definicion','formula','accion','identidad','rituales','consistencia','investigacion','priorizacion','roadmap','pricing','growth','soporte','documentacion','migraciones','performance','observabilidad','backup','recovery','autenticacion','autorizacion','privacidad','auditoria','secretos','compliance','calidad_datos','modelado_datos','consulta_datos','dashboards','automatizacion','scripts','integracion_api','webhooks','tests_e2e','accesibilidad','localizacion','feature_flags')
 $rows = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'EQUIPO.md') -Encoding utf8 | Where-Object { $_ -match '^\| ' } | Select-Object -Skip 2)
-if ($rows.Count -ne $agentNames.Count) { throw 'Se esperaban exactamente 13 roles.' }
+if ($rows.Count -ne $agentNames.Count) { throw "Se esperaban exactamente $($agentNames.Count) roles." }
 $outputDirectory = Join-Path $PSScriptRoot 'perfiles-agentes'
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 $common = @'
