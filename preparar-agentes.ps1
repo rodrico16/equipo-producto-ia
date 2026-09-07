@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
-$agentNames = @('supervisor','product_owner','arquitectura','seguridad','ux','ui','ingenieria','qa','sre','administracion_nocode','kpis','datos_bi')
+$agentNames = @('supervisor','product_owner','arquitectura','infraestructura','seguridad','ux','ui','ingenieria','qa','sre','administracion_nocode','kpis','datos_bi')
 $rows = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'EQUIPO.md') -Encoding utf8 | Where-Object { $_ -match '^\| ' } | Select-Object -Skip 2)
-if ($rows.Count -ne $agentNames.Count) { throw 'Se esperaban exactamente 12 roles.' }
+if ($rows.Count -ne $agentNames.Count) { throw 'Se esperaban exactamente 13 roles.' }
 $outputDirectory = Join-Path $PSScriptRoot 'perfiles-agentes'
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 $common = @'
@@ -19,8 +19,11 @@ for ($index = 0; $index -lt $agentNames.Count; $index++) {
     $mission = $cells[2].Trim()
     $deliverable = $cells[3].Trim()
     $instructions = "Tu rol es $role.`n$mission`nEntregable y aceptación: $deliverable`n$common"
+    if ($agentNames[$index] -eq 'infraestructura') {
+        $instructions += "`nSkill operativo obligatorio: lee skills/equipo-agentes/push-github-ssh.md antes de publicar cambios. Revisa estado, rama, remoto y diff; busca secretos; verifica ssh-agent y la autenticación SSH; usa una rama descriptiva y no hagas push forzado. La ruta de la clave debe venir por parámetro o SSH_KEY_PATH. Nunca imprimas, copies ni versionas la clave privada. Publica solo con autorización del usuario y verifica el resultado."
+    }
     if ($index -eq 0) {
-        $instructions += "`nCoordina los agentes product_owner, arquitectura, seguridad, ux, ui, ingenieria, qa, sre, administracion_nocode, kpis y datos_bi. Usa delegación para trabajo independiente y respeta la concurrencia real. No necesitas activarlos a todos. Asigna contexto, archivos y entregables, integra sus resultados y resuelve conflictos. Seguridad y QA revisan independientemente de ingeniería. No declares lista para producción una entrega con criterios obligatorios incumplidos. Si no hay producto, solicita la idea o propone oportunidades como hipótesis sin iniciar desarrollo.`nMide la optimizacion de tokens con dos capacidades: registrar el costo de tokens de una sesion y calcular el promedio de uso por sesion. Usa METRICAS_TOKENS.md, token-sessions.csv y medir-tokens.ps1. Solo registra tokens o costos reales reportados por Codex o una herramienta de medicion; si faltan, declara no medido.`nEn cada solicitud de aprobacion al usuario, incluye un checkpoint compacto con tiempo transcurrido del proceso, tokens usados si hay medicion real y porcentaje disponible de Codex si la app lo expone. Si falta un dato, informa no medido o no disponible; no estimes tokens."
+        $instructions += "`nCoordina los agentes product_owner, arquitectura, infraestructura, seguridad, ux, ui, ingenieria, qa, sre, administracion_nocode, kpis y datos_bi. Usa delegación para trabajo independiente y respeta la concurrencia real. No necesitas activarlos a todos. Asigna contexto, archivos y entregables, integra sus resultados y resuelve conflictos. Seguridad y QA revisan independientemente de ingeniería. No declares lista para producción una entrega con criterios obligatorios incumplidos. Si no hay producto, solicita la idea o propone oportunidades como hipótesis sin iniciar desarrollo.`nMide la optimizacion de tokens con dos capacidades: registrar el costo de tokens de una sesion y calcular el promedio de uso por sesion. Usa METRICAS_TOKENS.md, token-sessions.csv y medir-tokens.ps1. Solo registra tokens o costos reales reportados por Codex o una herramienta de medicion; si faltan, declara no medido.`nEn cada solicitud de aprobacion al usuario, incluye un checkpoint compacto con tiempo transcurrido del proceso, tokens usados si hay medicion real y porcentaje disponible de Codex si la app lo expone. Si falta un dato, informa no medido o no disponible; no estimes tokens."
     }
     $toml = 'name = "' + $agentNames[$index] + '"' + "`n" + 'description = "' + $role + ': ' + $mission.Replace('"','\"') + '"' + "`n" + "developer_instructions = '''`n" + $instructions + "`n'''`n"
     [System.IO.File]::WriteAllText((Join-Path $outputDirectory ($agentNames[$index] + '.toml')), $toml, [System.Text.UTF8Encoding]::new($false))

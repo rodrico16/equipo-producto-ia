@@ -9,7 +9,7 @@ fi
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SOURCE_DIR="$SCRIPT_DIR/perfiles-agentes"
 DEST_DIR="$SCRIPT_DIR/.codex/agents"
-EXPECTED_NAMES="supervisor product_owner arquitectura seguridad ux ui ingenieria qa sre administracion_nocode kpis datos_bi"
+EXPECTED_NAMES="supervisor product_owner arquitectura infraestructura seguridad ux ui ingenieria qa sre administracion_nocode kpis datos_bi"
 
 mkdir -p "$DEST_DIR"
 
@@ -39,4 +39,4 @@ for AGENT_NAME in $EXPECTED_NAMES; do
   fi
 done
 
-printf '%s\n' "Instalados y verificados 12 perfiles en $DEST_DIR"
+printf '%s\n' "Instalados y verificados 13 perfiles en $DEST_DIR"

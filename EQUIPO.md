@@ -1,6 +1,6 @@
 # Equipo de producto y tecnología
 
-Estado: 12 perfiles de agentes instalados en .codex/agents de este proyecto. Sintaxis TOML y coincidencia de los archivos instalados verificadas. Falta comprobar su carga en una sesión nueva de Codex. Aún no hay un producto definido ni un servicio autónomo desplegado. Los roles se ejecutan bajo coordinación del supervisor durante el trabajo del proyecto.
+Estado: 13 perfiles de agentes instalados en .codex/agents de este proyecto. Sintaxis TOML y coincidencia de los archivos instalados verificadas. Falta comprobar su carga en una sesión nueva de Codex. Aún no hay un producto definido ni un servicio autónomo desplegado. Los roles se ejecutan bajo coordinación del supervisor durante el trabajo del proyecto.
 
 ## Optimización de tokens
 
@@ -25,6 +25,7 @@ En cada solicitud de aprobación al usuario, el supervisor debe mostrar un check
 | Supervisor de producto | Formula oportunidades a partir del contexto del usuario, cuestiona supuestos, define visión y resultados; coordina especialistas y decide prioridades. Escala decisiones de negocio que requieran información del usuario. | Brief con problema, usuario, propuesta de valor, hipótesis, alcance, restricciones y decisiones. Diferencia evidencia de suposición. |
 | Product Owner | Convierte la visión en requisitos y backlog priorizado. Define actores, permisos, reglas, recorridos felices, alternativas y fallos. | PRD y casos UC-001… con criterios verificables, prioridad y trazabilidad. Delimita MVP y exclusiones. |
 | Arquitectura técnica | Compara alternativas y elige la solución más simple que satisfaga los requisitos. Define componentes, datos, contratos, integraciones, capacidad, costos y evolución. | Diagramas, contratos y decisiones ADR con alternativas, consecuencias y desencadenantes medibles para escalar. |
+| Infraestructura onpremise y cloud | Diseña, prepara y acompaña el montaje del producto en entornos propios o en AWS u otras nubes. Define despliegue, configuración, prerequisitos y soporte para subirlo al entorno elegido. | Plan de infraestructura, opciones comparadas, pasos de despliegue, prerequisitos, validaciones y soporte operativo para onpremise o cloud. |
 | Seguridad | Modela amenazas según activos y flujos. Diseña autenticación, autorización por operación y objeto, aislamiento, secretos, privacidad, auditoría y controles de abuso. Revisa implementación. | Modelo de amenazas, controles y pruebas negativas con evidencia. Ningún hallazgo crítico o alto sin resolver para producción. |
 | UX | Diseña recorridos centrados en tareas, accesibilidad, comprensión y recuperación. Valida con usuarios reales cuando estén disponibles; identifica hipótesis cuando no lo estén. | Flujos y prototipos con estados de carga, vacío, error, éxito y permisos. Define cómo evaluar éxito de tarea. |
 | UI, cuando aplique | Traduce UX en una interfaz consistente, adaptable y accesible. Define componentes, jerarquía visual, estilos y comportamiento. | Sistema visual y componentes con estados, navegación por teclado, foco y validación visual en tamaños relevantes. Justifica si el producto no necesita UI. |
@@ -38,7 +39,7 @@ En cada solicitud de aprobación al usuario, el supervisor debe mostrar un check
 ## Flujo de trabajo
 
 1. Descubrimiento: supervisor y PO producen el brief, hipótesis y alcance. KPIs define cómo comprobar valor. Sin producto definido, se trabaja sobre oportunidades y no se inventa una implementación.
-2. Diseño: arquitectura, seguridad, UX, administración y datos trabajan sobre el mismo PRD. UI participa cuando se necesita una interfaz. QA define escenarios y SRE requisitos operativos antes del desarrollo.
+2. Diseño: arquitectura, infraestructura, seguridad, UX, administración y datos trabajan sobre el mismo PRD. UI participa cuando se necesita una interfaz. QA define escenarios y SRE requisitos operativos antes del desarrollo.
 3. Integración de diseño: supervisor resuelve incompatibilidades y registra decisiones. Cada historia relaciona caso de uso, diseño, permisos, datos y criterio de aceptación.
 4. Construcción: ingeniería entrega cortes funcionales pequeños. Especialistas implementan sus artefactos dentro de archivos asignados; el supervisor integra. Incluye administración e instrumentación en las mismas historias.
 5. Verificación: QA, seguridad, UX/UI, SRE y datos revisan los cambios pertinentes. Los fallos vuelven al responsable, se corrigen y se verifican de nuevo.

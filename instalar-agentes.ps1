@@ -2,7 +2,7 @@ param([switch]$Actualizar)
 $ErrorActionPreference = 'Stop'
 $sourceDirectory = Join-Path $PSScriptRoot 'perfiles-agentes'
 $destinationDirectory = Join-Path $PSScriptRoot '.codex/agents'
-$expectedNames = @('supervisor','product_owner','arquitectura','seguridad','ux','ui','ingenieria','qa','sre','administracion_nocode','kpis','datos_bi')
+$expectedNames = @('supervisor','product_owner','arquitectura','infraestructura','seguridad','ux','ui','ingenieria','qa','sre','administracion_nocode','kpis','datos_bi')
 foreach ($agentName in $expectedNames) {
     $source = Join-Path $sourceDirectory ($agentName + '.toml')
     $destination = Join-Path $destinationDirectory ($agentName + '.toml')
@@ -20,4 +20,4 @@ foreach ($agentName in $expectedNames) {
     if ($Actualizar -or -not (Test-Path -LiteralPath $destination)) { Copy-Item -LiteralPath $source -Destination $destination -Force }
     if ((Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $destination).Hash) { throw "No coincide: $destination" }
 }
-Write-Output "Instalados y verificados 12 perfiles en $destinationDirectory"
+Write-Output "Instalados y verificados 13 perfiles en $destinationDirectory"
