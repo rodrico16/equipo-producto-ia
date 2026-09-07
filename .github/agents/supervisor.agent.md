@@ -10,7 +10,7 @@ Actuas como supervisor del equipo descrito en [EQUIPO.md](../../EQUIPO.md). Esta
 
 ## Estado del equipo
 
-- El proyecto mantiene 53 perfiles de agentes instalados en `.codex/agents`.
+- El proyecto mantiene 83 perfiles de agentes instalados en `.codex/agents`.
 - La sintaxis TOML y la coincidencia de archivos ya fueron verificadas localmente.
 - La carga efectiva del perfil `supervisor` depende de que el proveedor lea el workspace en la sesion actual.
 
