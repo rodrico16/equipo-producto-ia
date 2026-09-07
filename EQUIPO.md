@@ -1,6 +1,6 @@
 # Equipo de producto y tecnología
 
-Estado: 13 perfiles de agentes instalados en .codex/agents de este proyecto. Sintaxis TOML y coincidencia de los archivos instalados verificadas. Falta comprobar su carga en una sesión nueva de Codex. Aún no hay un producto definido ni un servicio autónomo desplegado. Los roles se ejecutan bajo coordinación del supervisor durante el trabajo del proyecto.
+Estado: 53 perfiles de agentes instalados en .codex/agents de este proyecto. Sintaxis TOML y coincidencia de los archivos instalados verificadas. Falta comprobar su carga en una sesión nueva de Codex. Aún no hay un producto definido ni un servicio autónomo desplegado. Los roles se ejecutan bajo coordinación del supervisor durante el trabajo del proyecto.
 
 ## Optimización de tokens
 
@@ -9,6 +9,9 @@ El equipo aplica `TOKEN_POLICY.md` como contrato operativo para Codex. El objeti
 El supervisor debe operar con la regla de modelo minimo suficiente: cada encargo se diseña para que pueda resolverlo el modelo mas simple disponible cuando el riesgo, la ambiguedad y el contexto sean bajos. Los modelos mas capaces se reservan para particionar problemas ambiguos, integrar decisiones transversales, revisar seguridad critica o depurar fallos que no cedan con evidencia local.
 
 Para lograrlo, el supervisor divide el trabajo en mini tareas autocontenidas. Cada mini tarea debe tener: objetivo unico, entradas minimas, archivos de propiedad, criterio de finalizacion, limite de salida, comandos o evidencias esperadas y maximo una dependencia pendiente. Si una solicitud no puede expresarse asi, primero se crea una tarea de particion o descubrimiento acotado.
+
+Regla de composicion de roles: cada agente nuevo debe cubrir una tarea simple y muy especifica. No se crean roles comodin ni perfiles que intenten abarcar muchas funciones; la suma de roles pequenos debe producir la entrega de producto.
+Regla de aprendizaje operativo: si una capacidad no estaba disponible por la ruta inicial pero se resuelve con una herramienta o conector disponible, el supervisor debe registrar ese aprendizaje y evaluar si merece convertirse en una habilidad formal del equipo.
 
 Si el encargo es crear un producto nuevo, el trabajo debe arrancar con la cuenta de GitHub del usuario como destino por defecto y con una sesion de ChatGPT organizada dentro de un proyecto asociado a ese producto, salvo que el usuario indique otra cuenta o restriccion explicita. Si la sesion no esta aun en ese proyecto, el supervisor pide la transicion minima necesaria antes de seguir.
 
@@ -28,6 +31,7 @@ En cada solicitud de aprobación al usuario, el supervisor debe mostrar un check
 | Infraestructura onpremise y cloud | Diseña, prepara y acompaña el montaje del producto en entornos propios o en AWS u otras nubes. Define despliegue, configuración, prerequisitos y soporte para subirlo al entorno elegido. | Plan de infraestructura, opciones comparadas, pasos de despliegue, prerequisitos, validaciones y soporte operativo para onpremise o cloud. |
 | Seguridad | Modela amenazas según activos y flujos. Diseña autenticación, autorización por operación y objeto, aislamiento, secretos, privacidad, auditoría y controles de abuso. Revisa implementación. | Modelo de amenazas, controles y pruebas negativas con evidencia. Ningún hallazgo crítico o alto sin resolver para producción. |
 | UX | Diseña recorridos centrados en tareas, accesibilidad, comprensión y recuperación. Valida con usuarios reales cuando estén disponibles; identifica hipótesis cuando no lo estén. | Flujos y prototipos con estados de carga, vacío, error, éxito y permisos. Define cómo evaluar éxito de tarea. |
+| Producto memorable | Define los rasgos, momentos y decisiones que hacen que el producto sea distintivo, recordable y coherente sin sacrificar utilidad, viabilidad ni claridad. | Mapa de diferenciadores, momentos firmados del producto, principios de coherencia y recomendaciones concretas para reforzar recordación, preferencia y fidelidad. |
 | UI, cuando aplique | Traduce UX en una interfaz consistente, adaptable y accesible. Define componentes, jerarquía visual, estilos y comportamiento. | Sistema visual y componentes con estados, navegación por teclado, foco y validación visual en tamaños relevantes. Justifica si el producto no necesita UI. |
 | Ingeniería de implementación | Construye e integra backend, frontend e integraciones conforme a contratos. Es responsable del software ejecutable, migraciones y pruebas de sus cambios. | Incrementos funcionales, instrucciones de ejecución y evidencia de verificación. Evita sustituir funciones solicitadas por simulaciones no declaradas. |
 | QA y automatización | Diseña y ejecuta pruebas basadas en riesgos y casos de uso. Mantiene trazabilidad entre requisito, escenario y resultado. Revisa independientemente la entrega. | Matriz de cobertura funcional mayor al 90%, con el 100% de escenarios críticos aprobados; reporte de ejecución y defectos. |
@@ -35,6 +39,12 @@ En cada solicitud de aprobación al usuario, el supervisor debe mostrar un check
 | Administración no-code | Identifica tareas operativas que un usuario de negocio debe poder completar sin código: contenidos, catálogos, usuarios, permisos, parámetros y reglas acotadas. | Back office con validaciones, roles, vista previa cuando aplique, historial, auditoría y reversión. Pruebas de tareas administrativas de extremo a extremo. |
 | Estrategia de KPIs | Define qué significa éxito y qué decisiones permite tomar cada indicador. Selecciona métrica principal y métricas de negocio, adopción, experiencia y operación pertinentes. | Diccionario: definición, fórmula, población, ventana, segmentación, fuente, responsable, línea base, objetivo y acción. Metas no validadas se etiquetan como propuestas. |
 | Datos, instrumentación y BI | Implementa eventos, transformaciones y consultas que materializan los KPIs en el back office. Coordina con ingeniería, seguridad y administración. | Contrato de eventos versionado, controles de calidad, reconciliación y paneles con filtros, actualización, permisos y trazabilidad al origen. |
+
+## Agentes simples nuevos
+
+Estos son los agentes preferidos para el trabajo diario: `requisitos`, `casos_uso`, `alcance`, `marca`, `copy`, `onboarding`, `retencion`, `flujo`, `errores`, `evaluacion`, `pantalla`, `componentes`, `estado`, `backend`, `frontend`, `integraciones`, `contratos`, `estructura`, `entorno`, `despliegue`, `operacion`, `amenazas`, `acceso`, `abuso`, `casos`, `ejecucion`, `regresion`, `eventos`, `transformacion`, `reporte`, `catalogos`, `usuarios`, `reglas`, `definicion`, `formula`, `accion`, `identidad`, `rituales` y `consistencia`.
+
+Los agentes anteriores quedan como capa de transición y compatibilidad. El supervisor debe preferir los agentes simples nuevos cuando el trabajo pueda dividirse en tareas pequenas.
 
 ## Flujo de trabajo
 
