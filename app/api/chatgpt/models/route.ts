@@ -1,4 +1,4 @@
-import { requireGitHubSession } from "@/lib/server-auth";
+import { requireControlRoomIdentity } from "@/lib/server-auth";
 import { runCodexRpc } from "@/lib/chatgpt-codex";
 
 export const runtime = "nodejs";
@@ -15,8 +15,8 @@ type CodexModel = {
 
 export async function GET() {
   try {
-    const auth = await requireGitHubSession();
-    const result = await runCodexRpc(auth.login, "models");
+    const identity = await requireControlRoomIdentity();
+    const result = await runCodexRpc(identity.key, "models");
     const data = Array.isArray(result.data) ? (result.data as CodexModel[]) : [];
     const models = data
       .map((item) => ({
@@ -35,6 +35,6 @@ export async function GET() {
     return Response.json({ models });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return Response.json({ error: message, models: [] }, { status: message === "UNAUTHORIZED" ? 401 : 502 });
+    return Response.json({ error: message, models: [] }, { status: message === "SESSION_REQUIRED" ? 401 : 502 });
   }
 }
