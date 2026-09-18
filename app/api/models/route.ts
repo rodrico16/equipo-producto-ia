@@ -25,14 +25,14 @@ export async function GET() {
     return NextResponse.json({
       models: models.map((availableModel) => ({
         id: availableModel.id,
-        displayName: availableModel.displayName ?? availableModel.id,
+        name: availableModel.name || availableModel.id,
       })),
     });
   } catch (error) {
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : String(error),
-        models: [{ id: "auto", displayName: "Auto · Copilot decide" }],
+        models: [{ id: "auto", name: "Auto · Copilot decide" }],
       },
       { status: 502 },
     );
