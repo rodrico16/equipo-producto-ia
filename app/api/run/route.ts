@@ -81,11 +81,17 @@ export async function POST(request: Request) {
 
         const repoDir = repo.split("/")[1];
 
+        // Never expose the credential-bearing clone URL to the coding agent.
         await sandbox.runCommand({
           cmd: "git",
-          args: ["switch", "-c", runBranch],
+          args: ["remote", "set-url", "origin", `https://github.com/${repo}.git`],
           cwd: repoDir,
         });
+        const baseShaResult = await sandbox.runCommand({ cmd: "git", args: ["rev-parse", "HEAD"], cwd: repoDir });
+        const baseSha = (await baseShaResult.stdout()).trim();
+        if (!baseSha) throw new Error("Could not resolve base commit");
+
+        await sandbox.runCommand({ cmd: "git", args: ["switch", "-c", runBranch], cwd: repoDir });
         await sandbox.runCommand({
           cmd: "git",
           args: ["config", "user.name", `${auth.login} via AI Control Room`],
@@ -136,7 +142,6 @@ export async function POST(request: Request) {
             COPILOT_GITHUB_TOKEN: auth.token,
             COPILOT_MODEL: model,
             COPILOT_TASK: prompt,
-            COPILOT_WORKDIR: `/vercel/sandbox/${repoDir}`,
             COPILOT_AGENT_DIR: "/tmp/equipo-producto-ia-agents/.codex/agents",
           },
         });
@@ -168,26 +173,43 @@ export async function POST(request: Request) {
           throw new Error(`Agent runtime exited with code ${finished.exitCode}`);
         }
 
-        const status = await sandbox.runCommand({ cmd: "git", args: ["status", "--porcelain"], cwd: repoDir });
-        const changed = (await status.stdout()).trim();
-        const diffStatCommand = await sandbox.runCommand({ cmd: "git", args: ["diff", "--stat"], cwd: repoDir });
-        const diffStat = (await diffStatCommand.stdout()).trim();
-        controller.enqueue(line({ type: "workspace.diff", data: { changed, diffStat } }));
+        const statusResult = await sandbox.runCommand({ cmd: "git", args: ["status", "--porcelain"], cwd: repoDir });
+        const changedWorkingTree = (await statusResult.stdout()).trim();
+        const headResult = await sandbox.runCommand({ cmd: "git", args: ["rev-parse", "HEAD"], cwd: repoDir });
+        const headAfterAgent = (await headResult.stdout()).trim();
+        const agentCreatedCommits = headAfterAgent !== baseSha;
 
-        if (!changed) {
+        if (!changedWorkingTree && !agentCreatedCommits) {
+          controller.enqueue(line({ type: "workspace.diff", data: { changed: "", diffStat: "" } }));
           controller.enqueue(line({ type: "control.done", data: { message: "La ejecución terminó sin cambios de archivos." } }));
           return;
         }
 
-        await sandbox.runCommand({ cmd: "git", args: ["add", "-A"], cwd: repoDir });
-        const commit = await sandbox.runCommand({
+        if (changedWorkingTree) {
+          await sandbox.runCommand({ cmd: "git", args: ["add", "-A"], cwd: repoDir });
+          const commit = await sandbox.runCommand({
+            cmd: "git",
+            args: ["commit", "-m", "feat: implement task with AI product team"],
+            cwd: repoDir,
+          });
+          if (commit.exitCode !== 0) {
+            throw new Error(`Commit failed: ${(await commit.stderr()).slice(-1200)}`);
+          }
+        }
+
+        const diffStatResult = await sandbox.runCommand({
           cmd: "git",
-          args: ["commit", "-m", "feat: implement task with AI product team"],
+          args: ["diff", "--stat", `${baseSha}..HEAD`],
           cwd: repoDir,
         });
-        if (commit.exitCode !== 0) {
-          throw new Error(`Commit failed: ${(await commit.stderr()).slice(-1200)}`);
-        }
+        const diffNamesResult = await sandbox.runCommand({
+          cmd: "git",
+          args: ["diff", "--name-status", `${baseSha}..HEAD`],
+          cwd: repoDir,
+        });
+        const diffStat = (await diffStatResult.stdout()).trim();
+        const changed = (await diffNamesResult.stdout()).trim();
+        controller.enqueue(line({ type: "workspace.diff", data: { changed, diffStat } }));
 
         controller.enqueue(line({ type: "control.status", data: { message: "Publicando rama en GitHub…" } }));
         const push = await sandbox.runCommand({
