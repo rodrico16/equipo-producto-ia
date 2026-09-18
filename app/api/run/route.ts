@@ -327,14 +327,10 @@ export async function POST(request: Request) {
             `USER OBJECTIVE:\n${prompt}`,
           ].join("\n");
 
-          const args = [
-            "--sandbox",
-            "workspace-write",
-            "--ask-for-approval",
-            "never",
-            "-c",
-            "sandbox_workspace_write.network_access=true",
-          ];
+          // Codex normally creates its own Linux sandbox (bwrap). This run is
+          // already isolated by Vercel Sandbox, so a nested bwrap sandbox is both
+          // unnecessary and incompatible with the container capabilities.
+          const args = ["--sandbox", "danger-full-access", "--ask-for-approval", "never"];
           if (model && model !== "auto") args.push("--model", model);
           if (reasoningEffort) {
             args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
