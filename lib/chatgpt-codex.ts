@@ -90,7 +90,7 @@ export async function startChatGPTDeviceLogin(login: string) {
   let keepAlive = false;
   try {
     await sandbox.runCommand("bash", ["-lc", 'rm -f "$HOME/.codex/control-room-login.json"']);
-    const command = await sandbox.runCommand({
+    await sandbox.runCommand({
       cmd: "node",
       args: [rpcPath],
       detached: true,
@@ -104,8 +104,6 @@ export async function startChatGPTDeviceLogin(login: string) {
         keepAlive = state.status === "pending";
         return state;
       }
-      const result = await command.wait().catch(() => null);
-      if (result && result.exitCode !== 0) break;
     }
     throw new Error("Codex did not return a device code in time");
   } finally {
