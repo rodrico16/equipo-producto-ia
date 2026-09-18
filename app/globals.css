@@ -334,9 +334,14 @@ button { color: inherit; }
 .composer-footnote { width: min(920px, 100%); margin: 4px auto 0; color: #687a84; text-align: center; font-size: 7px; }
 
 @media (max-width: 840px) {
-  .chat-app { grid-template-columns: 100% 100%; transform: translateX(-100%); transition: transform .18s ease; width: 200vw; }
+  .chat-app {
+    grid-template-columns: 100vw 100vw;
+    width: 200vw;
+    transform: translateX(-50%);
+    transition: transform .18s ease;
+  }
   .chat-app.mobile-list-open { transform: translateX(0); }
-  .chat-sidebar, .chat-main { width: 100vw; }
+  .chat-sidebar, .chat-main { width: 100vw; min-width: 100vw; max-width: 100vw; }
   .mobile-back { display: grid; place-items: center; width: 30px; height: 38px; border: 0; background: transparent; color: #c7d1d6; font-size: 34px; cursor: pointer; padding: 0; }
   .desktop-new { display: none; }
   .chat-sidebar { border-right: 0; }
