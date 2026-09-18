@@ -121,7 +121,7 @@ rl.on("line", async (line) => {
 proc.stderr.on("data", () => {});
 proc.on("exit", async (code) => {
   if (!finished && mode === "login-start") {
-    await saveState({ status: "failed", error: `Codex app-server exited (${code ?? "unknown"})` });
+    await saveState({ status: "failed", error: "Codex app-server exited (" + (code ?? "unknown") + ")" });
   }
   if (!finished) process.exit(code ?? 1);
 });
