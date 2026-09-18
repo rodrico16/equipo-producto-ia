@@ -33,6 +33,7 @@ const proc = spawn("codex", ["app-server"], {
 let initialized = false;
 let finished = false;
 let planType = null;
+let loginId = null;
 
 function send(message) {
   proc.stdin.write(JSON.stringify(message) + "\n");
@@ -44,6 +45,17 @@ async function finish(code = 0) {
   try { proc.stdin.end(); } catch {}
   try { proc.kill("SIGTERM"); } catch {}
   setTimeout(() => process.exit(code), 20);
+}
+
+async function markConnected(extra = {}) {
+  await saveState({
+    status: "connected",
+    loginId,
+    planType,
+    error: null,
+    ...extra,
+  });
+  emit({ ok: true, completed: true, loginId, planType });
 }
 
 const rl = readline.createInterface({ input: proc.stdout });
@@ -76,9 +88,10 @@ rl.on("line", async (line) => {
       return;
     }
     const result = msg.result || {};
+    loginId = result.loginId || null;
     await saveState({
       status: "pending",
-      loginId: result.loginId || null,
+      loginId,
       verificationUrl: result.verificationUrl || null,
       userCode: result.userCode || null,
       error: null,
@@ -100,21 +113,35 @@ rl.on("line", async (line) => {
   }
 
   if (msg.method === "account/updated") {
+    const authMode = msg.params?.authMode || null;
     planType = msg.params?.planType || planType;
-    if (mode === "login-start") await saveState({ planType });
+    if (mode === "login-start") {
+      if (authMode === "chatgpt" || authMode === "chatgptAuthTokens") {
+        await markConnected({ authMode });
+        await finish(0);
+      } else {
+        await saveState({ planType, authMode });
+      }
+    }
     return;
   }
 
   if (mode === "login-start" && msg.method === "account/login/completed") {
     const success = Boolean(msg.params?.success);
+    loginId = msg.params?.loginId || loginId;
+    if (success) {
+      await markConnected();
+      await finish(0);
+      return;
+    }
     await saveState({
-      status: success ? "connected" : "failed",
-      loginId: msg.params?.loginId || null,
+      status: "failed",
+      loginId,
       planType,
-      error: success ? null : msg.params?.error || "ChatGPT login failed",
+      error: msg.params?.error || "ChatGPT login failed",
     });
-    emit({ ok: success, completed: true, planType, error: msg.params?.error || null });
-    await finish(success ? 0 : 1);
+    emit({ ok: false, completed: true, planType, error: msg.params?.error || "ChatGPT login failed" });
+    await finish(1);
   }
 });
 
@@ -133,7 +160,7 @@ send({
     clientInfo: {
       name: "ai_product_team_control_room",
       title: "AI Product Team Control Room",
-      version: "0.2.0",
+      version: "0.2.1",
     },
   },
 });
