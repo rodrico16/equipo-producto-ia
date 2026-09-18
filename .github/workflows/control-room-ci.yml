@@ -3,7 +3,7 @@ name: Control Room CI
 on:
   push:
     branches:
-      - feat/copilot-agent-control-room
+      - "feat/**"
   pull_request:
     paths:
       - "app/**"
@@ -26,7 +26,7 @@ jobs:
           node-version: 24
       - name: Install dependencies
         run: npm install --no-audit --no-fund
-      - name: Validate embedded runner
+      - name: Validate embedded runners
         run: npm run validate:runner
       - name: Typecheck
         run: npm run typecheck
