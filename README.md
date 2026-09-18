@@ -1,202 +1,169 @@
-# Agentes
+# AI Product Team · Control Room
 
-Repositorio base para coordinar un equipo de agentes de producto y tecnología en distintos entornos de trabajo. No es una app tradicional: es un kit reutilizable que combina perfiles de agentes, reglas operativas, un plugin local de Codex, un custom agent para VS Code/GitHub Copilot y utilidades de verificación.
+Aplicación web para coordinar el equipo de agentes de producto y tecnología del repositorio y hacer que implemente cambios reales sobre GitHub usando **la propia suscripción de GitHub Copilot del usuario**.
 
-## Estado actual
+El proyecto conserva los 83 perfiles de `.codex/agents`, las reglas de `AGENTS.md`, `EQUIPO.md` y `TOKEN_POLICY.md`, pero agrega una experiencia web: autenticación con GitHub, selector de modelo Copilot, ejecución aislada en Vercel Sandbox, visualización en vivo de cada agente y publicación del resultado como Pull Request.
 
-- 83 perfiles de agentes instalados en `.codex/agents` y su copia preparada en `perfiles-agentes/`.
-- Sintaxis TOML y coincidencia entre archivos instalados verificadas.
-- La carga efectiva en una sesión nueva de Codex sigue pendiente de comprobación.
-- No hay un producto definido ni un servicio autónomo desplegado: este repositorio es un kit reutilizable de coordinación.
+## Qué hace
 
-## Qué incluye
+1. El usuario inicia sesión con GitHub OAuth.
+2. La app consulta los modelos disponibles para esa cuenta mediante GitHub Copilot SDK.
+3. El usuario indica repositorio, rama base, modelo y objetivo.
+4. Vercel Sandbox clona el repositorio en una microVM aislada.
+5. El runner carga el supervisor y el catálogo de agentes como `customAgents` de Copilot.
+6. Copilot delega en los especialistas que necesita y la UI transmite mensajes, herramientas y handoffs en vivo.
+7. El equipo implementa y verifica el cambio dentro del sandbox.
+8. La app crea una rama nueva y abre un Pull Request. **Nunca mergea automáticamente.**
 
-- 83 perfiles de agentes en `.codex/agents` y su copia preparada en `perfiles-agentes/`.
-- Reglas de coordinación en `AGENTS.md` y criterios de trabajo en `EQUIPO.md`.
-- Política de ahorro de contexto en `TOKEN_POLICY.md`.
-- Métricas y medición de uso en `METRICAS_TOKENS.md`, `token-sessions.csv` y `medir-tokens.ps1`.
-- Empaquetado como plugin local de Codex/ChatGPT en `.codex-plugin/plugin.json`.
-- Custom agent portable para VS Code y otros proveedores compatibles en `.github/agents/supervisor.agent.md`.
-- Ayudas operativas en `instalar-agentes.ps1`, `instalar-agentes.sh`, `instalar-global-agentes.ps1`, `instalar-global-agentes.sh`, `preparar-agentes.ps1`, `iniciar-ssh-github.ps1` y `validar_agentes.py`.
-- Un visor auxiliar en `AgentInteractionViewer/` para inspección local.
-
-## Capacidades del repositorio
-
-Este proyecto está pensado para:
-
-1. Coordinar trabajo con un rol `supervisor` que reparte tareas entre especialistas.
-2. Definir productos nuevos con un flujo ordenado de brief, backlog, diseño, implementación y verificación.
-3. Trabajar con criterios claros para roles como producto, arquitectura, seguridad, UX, UI, ingeniería, QA, SRE, administración no-code, KPIs y datos/BI.
-4. Aplicar una política explícita de reducción de tokens y contexto innecesario.
-5. Medir uso real de sesiones cuando haya datos disponibles, sin inventar métricas.
-6. Reutilizar el mismo equipo en Codex, ChatGPT Work y VS Code/GitHub Copilot.
-
-## Instalación local
-
-### Opción recomendada: instalar en este proyecto
-
-1. Abrí una terminal en la raíz del repositorio.
-2. Ejecutá:
-
-```powershell
-.\instalar-agentes.ps1
+```mermaid
+flowchart LR
+  U[Usuario] -->|GitHub OAuth| W[Next.js Control Room]
+  W -->|gitHubToken| C[GitHub Copilot SDK]
+  W --> S[Vercel Sandbox]
+  S --> R[Repo temporal]
+  C --> A[Supervisor + custom agents]
+  A --> R
+  A -->|event stream| W
+  R -->|branch + commit| G[GitHub]
+  G --> PR[Pull Request]
 ```
 
-3. Si querés sincronizar cambios nuevos sobre perfiles ya instalados, usá:
+## Interfaz
 
-```powershell
-.\instalar-agentes.ps1 -Actualizar
+La pantalla principal tiene tres áreas:
+
+- **Trabajo:** repositorio, rama, modelo Copilot y objetivo.
+- **Conversación del equipo:** streaming de lo que expresa cada agente y eventos de ejecución.
+- **Equipo:** catálogo completo de perfiles, con estados `idle`, `selected`, `active`, `done` y `failed`, más modelo, herramienta, duración y métricas cuando Copilot las informa.
+
+El contenido generado por IA se renderiza con el componente `MessageResponse` del patrón AI Elements/Streamdown para soportar Markdown en streaming, código, matemáticas y Mermaid.
+
+## Arquitectura
+
+- **Frontend / API:** Next.js 16 App Router.
+- **IA:** `@github/copilot-sdk`.
+- **Autenticación IA:** token de GitHub OAuth del usuario; Copilot consume su suscripción y sus modelos disponibles.
+- **Ejecución:** `@vercel/sandbox` con workspace efímero.
+- **Render de IA:** Streamdown + plugins usados por AI Elements.
+- **Entrega:** Git branch + Pull Request por API de GitHub.
+
+### Agentes
+
+Los perfiles siguen viviendo en `.codex/agents/*.toml`. El runner los transforma en `customAgents` de Copilot. El supervisor se mantiene como coordinador y las especialidades se delegan dinámicamente según la tarea.
+
+Los eventos `subagent.selected`, `subagent.started`, `subagent.completed`, `subagent.failed`, `assistant.message_delta`, `tool.execution_start` y `tool.execution_complete` alimentan la visualización en tiempo real.
+
+## Seguridad
+
+- El token OAuth se cifra con AES-256-GCM dentro de una cookie `httpOnly` y `sameSite=lax`.
+- El token nunca se envía al JavaScript del navegador.
+- El token llega al runner sólo para inicializar Copilot y se elimina de `process.env` antes de arrancar el runtime que expone herramientas de shell.
+- Después del clon autenticado se reemplaza `origin` por una URL sin credenciales antes de entregar el workspace a los agentes.
+- El push ocurre después de finalizar el runner y usa un header de autenticación temporal.
+- El sandbox es efímero y se destruye al finalizar la ejecución.
+- No se hace merge automático.
+- No se versionan secretos reales.
+
+## Configuración de GitHub OAuth
+
+Creá una OAuth App en GitHub Developer Settings.
+
+Para desarrollo local:
+
+- Homepage URL: `http://localhost:3000`
+- Authorization callback URL: `http://localhost:3000/api/auth/callback`
+
+Para producción reemplazá el host por el dominio de Vercel:
+
+- Authorization callback URL: `https://TU_DOMINIO/api/auth/callback`
+
+La app solicita `repo read:user read:org` porque necesita leer/escribir repositorios autorizados y crear la rama/PR final.
+
+## Variables de entorno
+
+Copiá `.env.example` a `.env.local`:
+
+```bash
+cp .env.example .env.local
 ```
 
-En Linux o macOS:
+Configurá:
 
-```sh
-./instalar-agentes.sh
+```env
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+SESSION_SECRET=
 ```
 
-Y para sincronizar perfiles ya instalados:
+`SESSION_SECRET` debe tener al menos 32 caracteres.
 
-```sh
-./instalar-agentes.sh --actualizar
+En Vercel, Sandbox utiliza OIDC automáticamente. Para desarrollo local, si el proyecto no dispone de OIDC, también pueden configurarse:
+
+```env
+VERCEL_TOKEN=
+VERCEL_TEAM_ID=
+VERCEL_PROJECT_ID=
 ```
 
-### Instalación global
+## Desarrollo local
 
-Si querés usar el mismo equipo desde otras carpetas:
+Requiere Node.js 24 o superior.
 
-```powershell
-.\instalar-global-agentes.ps1
+```bash
+npm install
+npm run dev
 ```
 
-Para sincronizar una versión nueva:
+Abrí `http://localhost:3000`.
 
-```powershell
-.\instalar-global-agentes.ps1 -Actualizar
+Validación completa:
+
+```bash
+npm run check
 ```
 
-En Linux o macOS:
+Esto verifica la sintaxis del runner embebido, TypeScript y el build de Next.js.
 
-```sh
-./instalar-global-agentes.sh
+## Deploy en Vercel
+
+1. Importá este repositorio en Vercel.
+2. Cargá `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` y `SESSION_SECRET`.
+3. Actualizá el callback de la OAuth App con el dominio final.
+4. Desplegá.
+
+`vercel.json` activa Fluid Compute. El endpoint de ejecución usa Vercel Sandbox y mantiene un stream NDJSON hacia la UI durante el trabajo del equipo.
+
+## Flujo Git generado por la app
+
+Para cada ejecución se crea una rama similar a:
+
+```text
+ai/control-room-1789690000000
 ```
 
-O para sincronizar perfiles globales ya existentes:
+El equipo trabaja sólo dentro de esa rama temporal. Al finalizar:
 
-```sh
-./instalar-global-agentes.sh --actualizar
-```
+- se detectan tanto cambios sin commit como commits creados accidentalmente por el agente;
+- se genera un commit si quedaron cambios pendientes;
+- se hace push de la rama;
+- se crea un Pull Request hacia la rama base elegida.
 
-### Preparación de perfiles
+## Kit de agentes existente
 
-Si editás la tabla de roles en `EQUIPO.md`, regenerá los perfiles con:
+La aplicación no reemplaza las otras formas de usar el equipo. Siguen disponibles:
 
-```powershell
-.\preparar-agentes.ps1
-```
-
-Después validá la estructura si hace falta:
-
-```powershell
-python .\validar_agentes.py
-```
-
-## Uso en Codex
-
-1. Abrí este repositorio como proyecto en Codex.
-2. Pedile al agente `supervisor` que coordine el trabajo.
-3. Para tareas nuevas, indicá producto, usuarios, problema, restricciones y resultado esperado.
-
-Ejemplo de arranque:
-
-> Usá el agente supervisor de este proyecto para coordinar esta tarea. Leé `AGENTS.md`, `EQUIPO.md` y `TOKEN_POLICY.md`, definí problema, usuarios, alcance y criterios de éxito, y delegá solo las subtareas necesarias.
-
-Si el perfil `supervisor` no aparece como agente cargado, seguí usando las instrucciones de `AGENTS.md` y revisá la instalación local antes de asumir que la configuración del proveedor quedó lista.
-
-## Uso en VS Code
-
-El agente portable vive en `.github/agents/supervisor.agent.md`.
-
-Flujo básico:
-
-1. Abrí esta carpeta en VS Code.
-2. Activá un proveedor compatible con custom agents, como GitHub Copilot o Codex.
-3. Elegí el agente `supervisor` en Chat.
-4. Si no aparece, recargá la ventana y revisá las personalizaciones del workspace.
-
-Más detalle en [`VSCODE.md`](./VSCODE.md).
-
-## Variables de entorno y configuración
-
-Este repositorio no debe guardar secretos ni credenciales reales. La regla general es:
-
-- `.env.example` documenta nombres de variables.
-- `.env` local contiene los valores reales.
-- `.env` no se versiona.
-
-### Variables sugeridas
-
-El archivo `.env.example` hoy solo define un contrato mínimo. A medida que el proyecto incorpore integraciones, agregá variables con este criterio:
-
-- `SERVICE_API_KEY`: clave privada de una integración externa.
-- `SERVICE_BASE_URL`: URL base de un servicio configurable.
-- `SERVICE_TIMEOUT_MS`: tiempo de espera para llamadas de red.
-- `GITHUB_TOKEN`: token personal si algún flujo lo requiere.
-- `SSH_KEY_PATH`: ruta local a la clave SSH autorizada para GitHub.
-
-Si una variable es sensible:
-
-- no la escribas en el repositorio,
-- no la imprimas en logs,
-- no la hardcodees en scripts,
-- y si falta, devolvé un error accionable.
-
-### Buenas prácticas
-
-- Usá rutas relativas o parámetros cuando sea posible.
-- Evitá asumir nombres de usuario, carpetas o cuentas concretas.
-- Mantené la configuración pública en el repo y la sensible fuera de él.
-
-## Medición de tokens
-
-Si querés controlar el costo de contexto y salida:
-
-```powershell
-.\medir-tokens.ps1
-```
-
-Para comparar etapas:
-
-```powershell
-.\medir-tokens.ps1 -Baseline baseline -Comparar token-policy-v1
-```
-
-Los números deben salir de medición real. Si no hay datos, reportá `no medido`.
-
-## Estructura principal
-
+- `.codex/agents`: perfiles de agentes.
 - `AGENTS.md`: reglas de coordinación.
-- `EQUIPO.md`: roles, entregables y criterios.
-- `TOKEN_POLICY.md`: política de contexto y salidas.
-- `METRICAS_TOKENS.md`: cómo medir uso.
-- `skills/equipo-agentes/SKILL.md`: skill principal del equipo.
-- `skills/equipo-agentes/push-github-ssh.md`: procedimiento seguro para publicar en GitHub por SSH.
-- `.codex-plugin/plugin.json`: definición del plugin local.
-- `.github/agents/supervisor.agent.md`: custom agent portable.
-- `instalar-agentes.sh` y `instalar-global-agentes.sh`: instalación portable en Unix-like.
+- `EQUIPO.md`: roles, flujo y criterios de aceptación.
+- `TOKEN_POLICY.md`: política de contexto y ahorro de tokens.
+- `METRICAS_TOKENS.md`: medición cuando exista dato real.
+- `.github/agents/supervisor.agent.md`: agente portable para VS Code/GitHub Copilot.
+- `.codex-plugin/plugin.json`: plugin local.
+- `AgentInteractionViewer/`: visor auxiliar histórico.
+- scripts de instalación y validación para uso local/global.
 
-## Recomendación de trabajo
+Para el detalle funcional de los roles consultá [`EQUIPO.md`](./EQUIPO.md). Para el uso tradicional en VS Code consultá [`VSCODE.md`](./VSCODE.md).
 
-Para usar bien este repositorio:
+## Estado de producción
 
-1. Definí primero el problema y el tipo de producto.
-2. Leé solo los archivos relevantes para esa tarea.
-3. Delegá en mini tareas con objetivo único.
-4. Verificá cambios con evidencia, no con supuestos.
-5. Tratá secretos, rutas locales e integraciones como configuración externa.
-
-## Documentación complementaria
-
-- [`LEEME.md`](./LEEME.md)
-- [`VSCODE.md`](./VSCODE.md)
-- [`EQUIPO.md`](./EQUIPO.md)
-- [`AGENTS.md`](./AGENTS.md)
+La app requiere un proyecto Vercel conectado y una GitHub OAuth App válida para ejecutar el flujo extremo a extremo. El CI del repositorio valida build y tipos, pero una ejecución real de Copilot/Sandbox necesita credenciales de usuario y entorno Vercel autorizados.
