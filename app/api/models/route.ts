@@ -1,8 +1,10 @@
-import { CopilotClient } from "@github/copilot-sdk";
+import { Sandbox } from "@vercel/sandbox";
 import { NextResponse } from "next/server";
+import { copilotModelsRunnerSource } from "@/lib/copilot-models-runner-source";
 import { requireGitHubSession } from "@/lib/server-auth";
 
 export const runtime = "nodejs";
+export const maxDuration = 120;
 
 export async function GET() {
   let auth;
@@ -12,22 +14,39 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const client = new CopilotClient({
-    gitHubToken: auth.token,
-    useLoggedInUser: false,
-    mode: "empty",
-    logLevel: "error",
-  });
-
+  let sandbox: Sandbox | undefined;
   try {
-    await client.start();
-    const models = await client.listModels();
-    return NextResponse.json({
-      models: models.map((availableModel) => ({
-        id: availableModel.id,
-        name: availableModel.name || availableModel.id,
-      })),
+    sandbox = await Sandbox.create({
+      timeout: 120_000,
+      persistent: false,
+      networkPolicy: "allow-all",
     });
+
+    await sandbox.writeFiles([
+      { path: "/tmp/copilot-models.mjs", content: Buffer.from(copilotModelsRunnerSource) },
+      { path: "/tmp/package.json", content: Buffer.from(JSON.stringify({ type: "module", private: true })) },
+    ]);
+
+    const install = await sandbox.runCommand({
+      cmd: "npm",
+      args: ["install", "--prefix", "/tmp", "@github/copilot-sdk@1.0.14", "--no-audit", "--no-fund"],
+    });
+    if (install.exitCode !== 0) {
+      throw new Error(`Copilot SDK install failed: ${(await install.stderr()).slice(-1000)}`);
+    }
+
+    const command = await sandbox.runCommand({
+      cmd: "node",
+      args: ["/tmp/copilot-models.mjs"],
+      env: { COPILOT_GITHUB_TOKEN: auth.token },
+    });
+    if (command.exitCode !== 0) {
+      throw new Error(`Copilot model discovery failed: ${(await command.stderr()).slice(-1000)}`);
+    }
+
+    const raw = (await command.stdout()).trim();
+    const models = JSON.parse(raw) as Array<{ id: string; name: string }>;
+    return NextResponse.json({ models });
   } catch (error) {
     return NextResponse.json(
       {
@@ -37,6 +56,6 @@ export async function GET() {
       { status: 502 },
     );
   } finally {
-    await client.stop().catch(() => []);
+    if (sandbox) await sandbox.stop().catch(() => undefined);
   }
 }
