@@ -87,11 +87,17 @@ try {
     const agentId = event.agentId;
 
     if (event.type === "assistant.message_delta") {
-      emit("agent.delta", { content: event.data.deltaContent || "" }, agentId || "supervisor");
+      emit("agent.delta", {
+        messageId: event.data.messageId,
+        content: event.data.deltaContent || "",
+      }, agentId || "supervisor");
       return;
     }
     if (event.type === "assistant.message") {
-      emit("agent.message", { content: event.data.content || "" }, agentId || "supervisor");
+      emit("agent.message", {
+        messageId: event.data.messageId,
+        content: event.data.content || "",
+      }, agentId || "supervisor");
       return;
     }
     if (event.type === "tool.execution_start") {
@@ -126,7 +132,8 @@ try {
     "- No te quedes en un plan: implementá el cambio completo en el repositorio abierto.",
     "- Delegá a los agentes especializados que realmente aporten valor y dejá que implementen/revisen.",
     "- Antes de cerrar, ejecutá las verificaciones y tests relevantes disponibles en el proyecto.",
-    "- No hagas git push, no crees PR y no accedas a credenciales; el control room hace la publicación después.",
+    "- No hagas git commit, git push ni crees PR; el control room hace la publicación después.",
+    "- No accedas a credenciales ni intentes ampliar los permisos disponibles.",
     "- Conservá cambios existentes del usuario y evitá operaciones destructivas no necesarias.",
     "- La respuesta final debe resumir qué cambió, pruebas ejecutadas, riesgos y pendientes.",
   ].join("\n");
