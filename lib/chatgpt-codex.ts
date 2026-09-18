@@ -36,7 +36,11 @@ function parseRpcOutput(output: string): RpcEnvelope {
   throw new Error("Codex app-server returned no structured response");
 }
 
-export async function runCodexRpc(login: string, mode: "account-read" | "models") {
+export async function runCodexRpc(
+  login: string,
+  mode: "account-read" | "models",
+  options: { keepSandboxAlive?: boolean } = {},
+) {
   const sandbox = await prepare(login);
   try {
     const command = await sandbox.runCommand({
@@ -56,7 +60,9 @@ export async function runCodexRpc(login: string, mode: "account-read" | "models"
     }
     return payload.result ?? {};
   } finally {
-    await sandbox.stop().catch(() => undefined);
+    if (!options.keepSandboxAlive) {
+      await sandbox.stop().catch(() => undefined);
+    }
   }
 }
 
@@ -83,6 +89,11 @@ export async function readChatGPTLoginState(login: string) {
     await sandbox.stop().catch(() => undefined);
   }
   return state;
+}
+
+export async function stopChatGPTSandbox(login: string) {
+  const sandbox = await prepare(login);
+  await sandbox.stop().catch(() => undefined);
 }
 
 export async function startChatGPTDeviceLogin(login: string) {
