@@ -7,7 +7,10 @@ export function chatGPTSandboxName(login: string) {
 }
 
 async function ensureCodex(sandbox: Sandbox) {
-  const check = await sandbox.runCommand("bash", ["-lc", "command -v codex >/dev/null 2>&1"]);
+  const check = await sandbox.runCommand("bash", [
+    "-lc",
+    'export PATH="$HOME/.local/bin:$PATH"; command -v codex >/dev/null 2>&1',
+  ]);
   if (check.exitCode === 0) return;
 
   const install = await sandbox.runCommand("bash", [
@@ -15,8 +18,7 @@ async function ensureCodex(sandbox: Sandbox) {
     [
       "set -euo pipefail",
       "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
-      "if command -v codex >/dev/null 2>&1; then exit 0; fi",
-      "if [ -x \"$HOME/.local/bin/codex\" ]; then ln -sf \"$HOME/.local/bin/codex\" /usr/local/bin/codex; fi",
+      'export PATH="$HOME/.local/bin:$PATH"',
       "command -v codex >/dev/null 2>&1",
     ].join("; "),
   ]);
