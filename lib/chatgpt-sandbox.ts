@@ -10,7 +10,7 @@ export const CHATGPT_AUTH_NETWORK_POLICY = {
     "*.github.com",
     "*.githubusercontent.com",
   ],
-} as const;
+};
 
 export const CHATGPT_WORKER_NETWORK_POLICY = {
   allow: [
@@ -21,7 +21,34 @@ export const CHATGPT_WORKER_NETWORK_POLICY = {
     "pypi.org",
     "files.pythonhosted.org",
   ],
-} as const;
+};
+
+type ForkOptions = Parameters<typeof Sandbox.fork>[0];
+
+type HardenedGlobal = typeof globalThis & {
+  __epiaChatGPTForkHardened?: boolean;
+};
+
+// app/api/run currently forks the persistent ChatGPT sandbox. Enforce the
+// worker firewall at the shared SDK boundary so a caller cannot accidentally
+// widen egress with networkPolicy: "allow-all".
+const hardenedGlobal = globalThis as HardenedGlobal;
+if (!hardenedGlobal.__epiaChatGPTForkHardened) {
+  const originalFork = Sandbox.fork.bind(Sandbox);
+  Sandbox.fork = (async (options: ForkOptions) => {
+    if (
+      typeof options.sourceSandbox === "string" &&
+      options.sourceSandbox.startsWith("chatgpt-codex-")
+    ) {
+      return originalFork({
+        ...options,
+        networkPolicy: CHATGPT_WORKER_NETWORK_POLICY,
+      });
+    }
+    return originalFork(options);
+  }) as typeof Sandbox.fork;
+  hardenedGlobal.__epiaChatGPTForkHardened = true;
+}
 
 export function chatGPTSandboxName(login: string) {
   const suffix = createHash("sha256").update(login.toLowerCase()).digest("hex").slice(0, 20);
