@@ -1,0 +1,36 @@
+name: Control Room CI
+
+on:
+  push:
+    branches:
+      - feat/copilot-agent-control-room
+  pull_request:
+    paths:
+      - "app/**"
+      - "components/**"
+      - "lib/**"
+      - "scripts/**"
+      - "package.json"
+      - "tsconfig.json"
+      - "vercel.json"
+      - ".github/workflows/control-room-ci.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Validate embedded runner
+        run: npm run validate:runner
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
