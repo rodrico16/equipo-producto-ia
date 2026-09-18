@@ -18,16 +18,16 @@ const githubToken = rawToken;
 delete process.env.COPILOT_GITHUB_TOKEN;
 
 function emit(type, data = {}, agentId) {
-  process.stdout.write(JSON.stringify({ type, data, agentId, at: new Date().toISOString() }) + "\\n");
+  process.stdout.write(JSON.stringify({ type, data, agentId, at: new Date().toISOString() }) + "\n");
 }
 
 function valueOf(source, key) {
-  const quoted = source.match(new RegExp("^" + key + "\\\\s*=\\\\s*\\\"([^\\\"]*)\\\"", "m"));
+  const quoted = source.match(new RegExp("^" + key + "\\s*=\\s*\"([^\"]*)\"", "m"));
   return quoted?.[1]?.trim() || "";
 }
 
 function multilineOf(source, key) {
-  const match = source.match(new RegExp(key + "\\\\s*=\\\\s*'''([\\\\s\\\\S]*?)'''", "m"));
+  const match = source.match(new RegExp(key + "\\s*=\\s*'''([\\s\\S]*?)'''", "m"));
   return match?.[1]?.trim() || "";
 }
 
@@ -38,7 +38,7 @@ async function loadAgents() {
 
   for (const file of files) {
     const source = await readFile(path.join(agentDir, file), "utf8");
-    const name = valueOf(source, "name") || file.replace(/\\.toml$/, "");
+    const name = valueOf(source, "name") || file.replace(/\.toml$/, "");
     const description = valueOf(source, "description") || name;
     const instructions = multilineOf(source, "developer_instructions") || description;
 
@@ -49,7 +49,7 @@ async function loadAgents() {
 
     agents.push({
       name,
-      displayName: name.replaceAll("_", " ").replace(/\\b\\w/g, (m) => m.toUpperCase()),
+      displayName: name.replaceAll("_", " ").replace(/\b\w/g, (m) => m.toUpperCase()),
       description,
       prompt: instructions,
       infer: true,
@@ -78,6 +78,7 @@ try {
     model,
     workingDirectory: workdir,
     streaming: true,
+    includeSubAgentStreamingEvents: true,
     customAgents: agents,
     onPermissionRequest: async () => ({ kind: "approve-once" }),
   });
@@ -128,7 +129,7 @@ try {
     "- No hagas git push, no crees PR y no accedas a credenciales; el control room hace la publicación después.",
     "- Conservá cambios existentes del usuario y evitá operaciones destructivas no necesarias.",
     "- La respuesta final debe resumir qué cambió, pruebas ejecutadas, riesgos y pendientes.",
-  ].join("\\n");
+  ].join("\n");
 
   emit("run.started", { task });
   await session.sendAndWait({ prompt });
