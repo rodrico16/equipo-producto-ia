@@ -4,11 +4,12 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const sources = [
-  ["lib/copilot-runner-source.ts", "main runner"],
-  ["lib/copilot-models-runner-source.ts", "model discovery runner"],
+  ["lib/copilot-runner-source.ts", "Copilot main runner"],
+  ["lib/copilot-models-runner-source.ts", "Copilot model discovery runner"],
+  ["lib/codex-rpc-source.ts", "Codex RPC runner"],
 ];
 
-const dir = await mkdtemp(path.join(tmpdir(), "copilot-runners-"));
+const dir = await mkdtemp(path.join(tmpdir(), "control-room-runners-"));
 try {
   for (const [sourcePath, label] of sources) {
     const wrapper = await readFile(sourcePath, "utf8");
@@ -22,7 +23,7 @@ try {
       process.stderr.write(result.stderr || result.stdout);
       process.exit(result.status ?? 1);
     }
-    console.log(`Embedded Copilot ${label} syntax: OK`);
+    console.log(`Embedded ${label} syntax: OK`);
   }
 } finally {
   await rm(dir, { recursive: true, force: true });

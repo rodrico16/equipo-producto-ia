@@ -3,15 +3,34 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { MessageResponse } from "@/components/ai-elements/message";
 
+type Provider = "copilot" | "chatgpt";
+
 type SessionState = {
   authenticated: boolean;
   user?: { login: string; avatarUrl?: string | null };
+};
+
+type ReasoningOption = {
+  id: string;
+  description?: string;
 };
 
 type ModelOption = {
   id: string;
   displayName?: string;
   name?: string;
+  isDefault?: boolean;
+  defaultReasoningEffort?: string | null;
+  reasoningEfforts?: ReasoningOption[];
+};
+
+type ChatGPTState = {
+  status: "disconnected" | "pending" | "connected" | "failed" | "expired";
+  verificationUrl?: string | null;
+  userCode?: string | null;
+  planType?: string | null;
+  email?: string | null;
+  error?: string | null;
 };
 
 type AgentDefinition = {
@@ -52,7 +71,7 @@ type Activity = {
   tone?: "neutral" | "good" | "bad";
 };
 
-const FALLBACK_MODELS: ModelOption[] = [{ id: "auto", displayName: "Auto · Copilot decide" }];
+const COPILOT_FALLBACK: ModelOption[] = [{ id: "auto", displayName: "Auto · Copilot decide" }];
 
 function asString(value: unknown) {
   return typeof value === "string" ? value : "";
@@ -70,11 +89,15 @@ function prettyDuration(ms?: number) {
 
 export default function Home() {
   const [session, setSession] = useState<SessionState | null>(null);
-  const [models, setModels] = useState<ModelOption[]>(FALLBACK_MODELS);
+  const [provider, setProvider] = useState<Provider>("copilot");
+  const [models, setModels] = useState<ModelOption[]>(COPILOT_FALLBACK);
+  const [chatGPT, setChatGPT] = useState<ChatGPTState>({ status: "disconnected" });
+  const [connectingChatGPT, setConnectingChatGPT] = useState(false);
   const [agents, setAgents] = useState<AgentRuntime[]>([]);
   const [repo, setRepo] = useState("rodrico16/equipo-producto-ia");
   const [branch, setBranch] = useState("main");
   const [model, setModel] = useState("auto");
+  const [reasoningEffort, setReasoningEffort] = useState("");
   const [prompt, setPrompt] = useState("");
   const [agentFilter, setAgentFilter] = useState("");
   const [running, setRunning] = useState(false);
@@ -105,15 +128,59 @@ export default function Home() {
 
   useEffect(() => {
     if (!session?.authenticated) return;
-    fetch("/api/models", { cache: "no-store" })
+    fetch("/api/chatgpt/status", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((state) => setChatGPT(state as ChatGPTState))
+      .catch(() => setChatGPT({ status: "disconnected" }));
+  }, [session?.authenticated]);
+
+  useEffect(() => {
+    if (chatGPT.status !== "pending") return;
+    const timer = window.setInterval(() => {
+      fetch("/api/chatgpt/status", { cache: "no-store" })
+        .then((response) => response.json())
+        .then((state) => setChatGPT(state as ChatGPTState))
+        .catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [chatGPT.status]);
+
+  useEffect(() => {
+    if (!session?.authenticated) return;
+
+    const endpoint = provider === "chatgpt" ? "/api/chatgpt/models" : "/api/models";
+    if (provider === "chatgpt" && chatGPT.status !== "connected") {
+      setModels([]);
+      setModel("");
+      setReasoningEffort("");
+      return;
+    }
+
+    fetch(endpoint, { cache: "no-store" })
       .then(async (response) => {
         const body = await response.json();
         const fetched = Array.isArray(body.models) ? (body.models as ModelOption[]) : [];
-        if (!fetched.some((item) => item.id === "auto")) fetched.unshift(FALLBACK_MODELS[0]);
-        setModels(fetched.length ? fetched : FALLBACK_MODELS);
+        if (provider === "copilot") {
+          if (!fetched.some((item) => item.id === "auto")) fetched.unshift(COPILOT_FALLBACK[0]);
+          const next = fetched.length ? fetched : COPILOT_FALLBACK;
+          setModels(next);
+          setModel((current) => (next.some((item) => item.id === current) ? current : "auto"));
+          setReasoningEffort("");
+          return;
+        }
+
+        setModels(fetched);
+        const preferred = fetched.find((item) => item.isDefault) ?? fetched[0];
+        if (preferred) {
+          setModel(preferred.id);
+          setReasoningEffort(preferred.defaultReasoningEffort || preferred.reasoningEfforts?.[0]?.id || "");
+        }
       })
-      .catch(() => setModels(FALLBACK_MODELS));
-  }, [session?.authenticated]);
+      .catch(() => {
+        if (provider === "copilot") setModels(COPILOT_FALLBACK);
+        else setModels([]);
+      });
+  }, [session?.authenticated, provider, chatGPT.status]);
 
   useEffect(() => {
     transcriptEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -129,8 +196,11 @@ export default function Home() {
     );
   }, [agentFilter, agents]);
 
+  const selectedModel = models.find((item) => item.id === model);
+  const reasoningOptions = selectedModel?.reasoningEfforts ?? [];
   const activeCount = agents.filter((agent) => agent.status === "active" || agent.status === "selected").length;
   const usedCount = agents.filter((agent) => agent.status !== "idle").length;
+  const canRun = Boolean(prompt.trim()) && !running && (provider === "copilot" || chatGPT.status === "connected");
 
   function resetRunState() {
     setTranscripts([]);
@@ -143,9 +213,7 @@ export default function Home() {
   }
 
   function updateAgent(name: string, patch: Partial<AgentRuntime>) {
-    setAgents((current) =>
-      current.map((agent) => (agent.name === name ? { ...agent, ...patch } : agent)),
-    );
+    setAgents((current) => current.map((agent) => (agent.name === name ? { ...agent, ...patch } : agent)));
   }
 
   function displayNameFor(name: string) {
@@ -157,6 +225,39 @@ export default function Home() {
       ...current.slice(-39),
       { id: `${Date.now()}-${Math.random()}`, label, detail, tone },
     ]);
+  }
+
+  async function connectChatGPT() {
+    setConnectingChatGPT(true);
+    setError("");
+    try {
+      const response = await fetch("/api/chatgpt/login", { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "No se pudo iniciar el login de ChatGPT");
+      setChatGPT(body as ChatGPTState);
+    } catch (connectError) {
+      setError(connectError instanceof Error ? connectError.message : String(connectError));
+    } finally {
+      setConnectingChatGPT(false);
+    }
+  }
+
+  async function disconnectChatGPT() {
+    await fetch("/api/chatgpt/logout", { method: "POST" }).catch(() => undefined);
+    setChatGPT({ status: "disconnected" });
+    if (provider === "chatgpt") {
+      setModels([]);
+      setModel("");
+      setReasoningEffort("");
+    }
+  }
+
+  function changeModel(nextModel: string) {
+    setModel(nextModel);
+    const option = models.find((item) => item.id === nextModel);
+    if (provider === "chatgpt") {
+      setReasoningEffort(option?.defaultReasoningEffort || option?.reasoningEfforts?.[0]?.id || "");
+    }
   }
 
   function handleEvent(event: StreamEvent) {
@@ -175,8 +276,8 @@ export default function Home() {
     }
 
     if (event.type === "run.started") {
-      updateAgent("supervisor", { status: "active" });
-      addActivity("Supervisor inició la ejecución", undefined, "good");
+      updateAgent("supervisor", { status: "active", model: model || undefined });
+      addActivity("Supervisor inició la ejecución", provider === "chatgpt" ? "ChatGPT / Codex" : "GitHub Copilot", "good");
       return;
     }
 
@@ -192,8 +293,8 @@ export default function Home() {
     if (event.type === "subagent.started") {
       const name = asString(data.agentName) || agentId;
       if (event.agentId) agentIdToName.current[event.agentId] = name;
-      updateAgent(name, { status: "active", model: asString(data.model) || undefined, tool: undefined });
-      addActivity(`${displayNameFor(name)} empezó a trabajar`, asString(data.model) || undefined, "good");
+      updateAgent(name, { status: "active", model: asString(data.model) || model || undefined, tool: undefined });
+      addActivity(`${displayNameFor(name)} empezó a trabajar`, asString(data.model) || model || undefined, "good");
       return;
     }
 
@@ -236,7 +337,8 @@ export default function Home() {
       const name = agentIdToName.current[agentId] || agentId;
       const chunk = asString(data.content);
       if (!chunk) return;
-      const id = `message-${agentId}`;
+      const messageId = asString(data.messageId);
+      const id = `message-${messageId || agentId}`;
       setTranscripts((current) => {
         const index = current.findIndex((message) => message.id === id);
         if (index === -1) {
@@ -272,7 +374,7 @@ export default function Home() {
     }
 
     if (event.type === "run.completed") {
-      updateAgent("supervisor", { status: "done", tool: undefined });
+      updateAgent("supervisor", { status: "done", tool: undefined, totalTokens: asNumber(data.totalTokens) });
       addActivity("Supervisor cerró la ejecución", undefined, "good");
       return;
     }
@@ -294,7 +396,7 @@ export default function Home() {
 
   async function startRun(event: FormEvent) {
     event.preventDefault();
-    if (!prompt.trim() || running) return;
+    if (!canRun) return;
     resetRunState();
     setRunning(true);
     setStatus("Preparando ejecución…");
@@ -303,7 +405,7 @@ export default function Home() {
       const response = await fetch("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo, branch, model, prompt }),
+        body: JSON.stringify({ repo, branch, provider, model, reasoningEffort, prompt }),
       });
 
       if (!response.ok || !response.body) {
@@ -320,9 +422,9 @@ export default function Home() {
         buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          handleEvent(JSON.parse(line) as StreamEvent);
+        for (const valueLine of lines) {
+          if (!valueLine.trim()) continue;
+          handleEvent(JSON.parse(valueLine) as StreamEvent);
         }
         if (done) break;
       }
@@ -350,18 +452,17 @@ export default function Home() {
       <main className="login-shell">
         <section className="login-card">
           <div className="eyebrow">AI PRODUCT TEAM</div>
-          <h1>Tu equipo de agentes, programando con tu GitHub Copilot.</h1>
+          <h1>Tu equipo de agentes, programando con Copilot o con tu ChatGPT.</h1>
           <p className="lead">
-            Conectá GitHub, elegí el modelo y mirá cómo Supervisor, Producto, UX, Arquitectura,
-            Ingeniería, QA y el resto del equipo se delegan trabajo sobre un repositorio real.
+            Conectá GitHub para acceder a tus repositorios. Después elegí GitHub Copilot o ChatGPT / Codex,
+            seleccioná el modelo y mirá cómo el equipo se delega trabajo sobre un repositorio real.
           </p>
           <a className="github-button" href="/api/auth/github">
             <span className="github-icon">⌘</span>
             Continuar con GitHub
           </a>
           <div className="security-note">
-            <strong>Tu suscripción, tus permisos.</strong> El token se cifra en una cookie httpOnly y
-            la ejecución ocurre dentro de un Vercel Sandbox aislado.
+            <strong>Tu suscripción, tus permisos.</strong> Las credenciales quedan del lado servidor y la ejecución ocurre dentro de Vercel Sandbox.
           </div>
         </section>
       </main>
@@ -399,6 +500,41 @@ export default function Home() {
           </div>
 
           <form onSubmit={startRun} className="run-form">
+            <div className="provider-switch" role="group" aria-label="Proveedor de inteligencia artificial">
+              <button type="button" className={provider === "copilot" ? "active" : ""} onClick={() => setProvider("copilot")} disabled={running}>
+                <strong>GitHub Copilot</strong><small>Tu suscripción Copilot</small>
+              </button>
+              <button type="button" className={provider === "chatgpt" ? "active" : ""} onClick={() => setProvider("chatgpt")} disabled={running}>
+                <strong>ChatGPT / Codex</strong><small>Tu plan de ChatGPT</small>
+              </button>
+            </div>
+
+            {provider === "chatgpt" && (
+              <div className={`provider-account provider-${chatGPT.status}`}>
+                <div>
+                  <strong>{chatGPT.status === "connected" ? "ChatGPT conectado" : chatGPT.status === "pending" ? "Esperando autorización" : "Conectá tu ChatGPT"}</strong>
+                  <small>
+                    {chatGPT.status === "connected"
+                      ? `${chatGPT.planType || "Plan ChatGPT"}${chatGPT.email ? ` · ${chatGPT.email}` : ""}`
+                      : "Codex usa tu acceso de ChatGPT; no necesitás OPENAI_API_KEY."}
+                  </small>
+                </div>
+                {chatGPT.status === "connected" ? (
+                  <button type="button" className="ghost-button" onClick={disconnectChatGPT} disabled={running}>Desconectar</button>
+                ) : chatGPT.status === "pending" ? (
+                  <div className="device-code-box">
+                    <code>{chatGPT.userCode}</code>
+                    {chatGPT.verificationUrl && <a href={chatGPT.verificationUrl} target="_blank" rel="noreferrer">Abrir ChatGPT ↗</a>}
+                  </div>
+                ) : (
+                  <button type="button" className="connect-provider-button" onClick={connectChatGPT} disabled={connectingChatGPT || running}>
+                    {connectingChatGPT ? "Conectando…" : "Conectar ChatGPT"}
+                  </button>
+                )}
+                {(chatGPT.status === "failed" || chatGPT.status === "expired") && chatGPT.error && <p className="provider-error">{chatGPT.error}</p>}
+              </div>
+            )}
+
             <label>
               Repositorio
               <input value={repo} onChange={(event) => setRepo(event.target.value)} disabled={running} />
@@ -408,13 +544,22 @@ export default function Home() {
               <input value={branch} onChange={(event) => setBranch(event.target.value)} disabled={running} />
             </label>
             <label>
-              Modelo Copilot
-              <select value={model} onChange={(event) => setModel(event.target.value)} disabled={running}>
+              Modelo {provider === "chatgpt" ? "ChatGPT / Codex" : "Copilot"}
+              <select value={model} onChange={(event) => changeModel(event.target.value)} disabled={running || !models.length}>
+                {!models.length && <option value="">Conectá ChatGPT para ver modelos</option>}
                 {models.map((item) => (
                   <option key={item.id} value={item.id}>{item.displayName || item.name || item.id}</option>
                 ))}
               </select>
             </label>
+            {provider === "chatgpt" && reasoningOptions.length > 0 && (
+              <label>
+                Razonamiento
+                <select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)} disabled={running}>
+                  {reasoningOptions.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+                </select>
+              </label>
+            )}
             <label className="task-field">
               Objetivo
               <textarea
@@ -424,7 +569,7 @@ export default function Home() {
                 disabled={running}
               />
             </label>
-            <button className="run-button" type="submit" disabled={running || !prompt.trim()}>
+            <button className="run-button" type="submit" disabled={!canRun}>
               {running ? <><span className="spinner" /> Ejecutando equipo</> : <>▶ Iniciar equipo</>}
             </button>
           </form>
@@ -449,7 +594,7 @@ export default function Home() {
           <div className="conversation-heading">
             <div>
               <span className="step-index">02</span>
-              <div><strong>Conversación del equipo</strong><small>Texto y handoffs emitidos por Copilot en tiempo real.</small></div>
+              <div><strong>Conversación del equipo</strong><small>Texto, herramientas y handoffs emitidos por {provider === "chatgpt" ? "Codex" : "Copilot"}.</small></div>
             </div>
             <div className="run-metrics">
               <span>{usedCount}<small>participaron</small></span>
@@ -514,6 +659,7 @@ export default function Home() {
                     {agent.tool && <span>↳ {agent.tool}</span>}
                     {agent.durationMs !== undefined && <span>{prettyDuration(agent.durationMs)}</span>}
                     {agent.totalToolCalls !== undefined && <span>{agent.totalToolCalls} tools</span>}
+                    {agent.totalTokens !== undefined && <span>{agent.totalTokens} tokens</span>}
                   </div>
                 )}
               </article>
