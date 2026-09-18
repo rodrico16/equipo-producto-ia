@@ -1,7 +1,7 @@
 import { Sandbox } from "@vercel/sandbox";
 import { chatGPTSandboxName } from "@/lib/chatgpt-sandbox";
 import { copilotRunnerSource } from "@/lib/copilot-runner-source";
-import { requireGitHubSession } from "@/lib/server-auth";
+import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -74,7 +74,12 @@ function emitCodexEvent(controller: ReadableStreamDefaultController<Uint8Array>,
     controller.enqueue(line({
       type: "run.failed",
       agentId: "supervisor",
-      data: { message: asString(event.message) || asString(asRecord(event.error).message) || "Codex execution failed" },
+      data: {
+        message:
+          asString(event.message) ||
+          asString(asRecord(event.error).message) ||
+          "Codex execution failed",
+      },
     }));
     return;
   }
@@ -109,7 +114,10 @@ function emitCodexEvent(controller: ReadableStreamDefaultController<Uint8Array>,
     controller.enqueue(line({
       type: "tool.completed",
       agentId: agentName || "supervisor",
-      data: { success: asString(item.status) !== "failed", toolName: asString(item.command) || "command" },
+      data: {
+        success: asString(item.status) !== "failed",
+        toolName: asString(item.command) || "command",
+      },
     }));
     return;
   }
@@ -126,14 +134,15 @@ function emitCodexEvent(controller: ReadableStreamDefaultController<Uint8Array>,
   }
 }
 
-export async function POST(request: Request) {
-  let auth;
-  try {
-    auth = await requireGitHubSession();
-  } catch {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+function githubHeaders(token?: string) {
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+}
 
+export async function POST(request: Request) {
   const body = (await request.json()) as RunRequest;
   const repo = body.repo?.trim() || "rodrico16/equipo-producto-ia";
   const prompt = body.prompt?.trim();
@@ -148,6 +157,21 @@ export async function POST(request: Request) {
     return Response.json({ error: "Prompt is required" }, { status: 400 });
   }
 
+  let identity;
+  try {
+    identity = await requireControlRoomIdentity();
+  } catch {
+    return Response.json({ error: "Session required" }, { status: 401 });
+  }
+
+  const github = await getGitHubSession();
+  if (provider === "copilot" && !github) {
+    return Response.json(
+      { error: "GitHub Copilot requiere conectar GitHub. Usá ChatGPT / Codex para ejecutar como invitado." },
+      { status: 401 },
+    );
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let sandbox: Sandbox | undefined;
@@ -155,59 +179,87 @@ export async function POST(request: Request) {
         controller.enqueue(line({ type: "control.status", data: { message: "Validando repositorio…" } }));
 
         const repoResponse = await fetch(`https://api.github.com/repos/${repo}`, {
-          headers: {
-            Authorization: `Bearer ${auth.token}`,
-            Accept: "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
+          headers: githubHeaders(github?.token),
           cache: "no-store",
         });
         if (!repoResponse.ok) {
+          if (!github && (repoResponse.status === 404 || repoResponse.status === 403)) {
+            throw new Error("Como invitado sólo podés ejecutar sobre repositorios públicos. Conectá GitHub para repos privados.");
+          }
           throw new Error(`GitHub repository access failed (${repoResponse.status})`);
         }
-        const repoInfo = (await repoResponse.json()) as { default_branch?: string };
+
+        const repoInfo = (await repoResponse.json()) as { default_branch?: string; private?: boolean };
+        if (!github && repoInfo.private) {
+          throw new Error("Como invitado sólo podés ejecutar sobre repositorios públicos.");
+        }
+
         const baseBranch = body.branch?.trim() || repoInfo.default_branch || "main";
         const runBranch = `ai/control-room-${Date.now()}`;
+        const actor = github?.login || "guest";
         let repoDir: string;
 
         controller.enqueue(line({
           type: "control.status",
-          data: { message: `Creando sandbox ${provider === "chatgpt" ? "ChatGPT/Codex" : "Copilot"} para ${repo}@${baseBranch}`, branch: runBranch },
+          data: {
+            message: `Creando sandbox ${provider === "chatgpt" ? "ChatGPT/Codex" : "Copilot"} para ${repo}@${baseBranch}`,
+            branch: github ? runBranch : null,
+          },
         }));
 
         if (provider === "chatgpt") {
           sandbox = await Sandbox.fork({
-            sourceSandbox: chatGPTSandboxName(auth.login),
+            sourceSandbox: chatGPTSandboxName(identity.key),
             persistent: false,
             timeout: 20 * 60 * 1000,
             networkPolicy: "allow-all",
           });
-          const workspaceResult = await sandbox.runCommand("bash", ["-lc", 'mkdir -p /tmp/control-room-work && mktemp -d /tmp/control-room-work/run-XXXXXX']);
+
+          const workspaceResult = await sandbox.runCommand("bash", [
+            "-lc",
+            "mkdir -p /tmp/control-room-work && mktemp -d /tmp/control-room-work/run-XXXXXX",
+          ]);
           if (workspaceResult.exitCode !== 0) throw new Error("Could not create Codex workspace");
           const workspace = (await workspaceResult.stdout()).trim();
           repoDir = `${workspace}/${repo.split("/")[1]}`;
 
-          const clone = await sandbox.runCommand({
-            cmd: "bash",
-            args: [
-              "-lc",
-              'AUTH=$(printf "x-access-token:%s" "$GH_CLONE_TOKEN" | base64 | tr -d "\\n"); git -c http.extraHeader="Authorization: Basic $AUTH" clone --depth 1 --branch "$BASE_BRANCH" "https://github.com/$TARGET_REPO.git" "$TARGET_DIR"',
-            ],
-            env: {
-              GH_CLONE_TOKEN: auth.token,
-              BASE_BRANCH: baseBranch,
-              TARGET_REPO: repo,
-              TARGET_DIR: repoDir,
-            },
-          });
-          if (clone.exitCode !== 0) throw new Error(`Git clone failed: ${(await clone.stderr()).slice(-1200)}`);
+          const clone = github
+            ? await sandbox.runCommand({
+                cmd: "bash",
+                args: [
+                  "-lc",
+                  'AUTH=$(printf "x-access-token:%s" "$GH_CLONE_TOKEN" | base64 | tr -d "\\n"); git -c http.extraHeader="Authorization: Basic $AUTH" clone --depth 1 --branch "$BASE_BRANCH" "https://github.com/$TARGET_REPO.git" "$TARGET_DIR"',
+                ],
+                env: {
+                  GH_CLONE_TOKEN: github.token,
+                  BASE_BRANCH: baseBranch,
+                  TARGET_REPO: repo,
+                  TARGET_DIR: repoDir,
+                },
+              })
+            : await sandbox.runCommand({
+                cmd: "bash",
+                args: [
+                  "-lc",
+                  'git clone --depth 1 --branch "$BASE_BRANCH" "https://github.com/$TARGET_REPO.git" "$TARGET_DIR"',
+                ],
+                env: {
+                  BASE_BRANCH: baseBranch,
+                  TARGET_REPO: repo,
+                  TARGET_DIR: repoDir,
+                },
+              });
+          if (clone.exitCode !== 0) {
+            throw new Error(`Git clone failed: ${(await clone.stderr()).slice(-1200)}`);
+          }
         } else {
+          if (!github) throw new Error("GitHub connection required for Copilot");
           sandbox = await Sandbox.create({
             source: {
               type: "git",
               url: `https://github.com/${repo}.git`,
-              username: auth.login,
-              password: auth.token,
+              username: github.login,
+              password: github.token,
               revision: baseBranch,
               depth: 1,
             },
@@ -228,8 +280,16 @@ export async function POST(request: Request) {
         if (!baseSha) throw new Error("Could not resolve base commit");
 
         await sandbox.runCommand({ cmd: "git", args: ["switch", "-c", runBranch], cwd: repoDir });
-        await sandbox.runCommand({ cmd: "git", args: ["config", "user.name", `${auth.login} via AI Control Room`], cwd: repoDir });
-        await sandbox.runCommand({ cmd: "git", args: ["config", "user.email", `${auth.login}@users.noreply.github.com`], cwd: repoDir });
+        await sandbox.runCommand({
+          cmd: "git",
+          args: ["config", "user.name", github ? `${github.login} via AI Control Room` : "AI Control Room Guest"],
+          cwd: repoDir,
+        });
+        await sandbox.runCommand({
+          cmd: "git",
+          args: ["config", "user.email", github ? `${github.login}@users.noreply.github.com` : "control-room@users.noreply.github.com"],
+          cwd: repoDir,
+        });
 
         controller.enqueue(line({ type: "control.status", data: { message: "Cargando los perfiles del equipo…" } }));
         const agentsClone = await sandbox.runCommand("git", [
@@ -252,7 +312,9 @@ export async function POST(request: Request) {
             ],
             cwd: repoDir,
           });
-          if (installAgents.exitCode !== 0) throw new Error(`Could not install Codex agent profiles: ${(await installAgents.stderr()).slice(-1000)}`);
+          if (installAgents.exitCode !== 0) {
+            throw new Error(`Could not install Codex agent profiles: ${(await installAgents.stderr()).slice(-1000)}`);
+          }
           const teamCount = Number((await installAgents.stdout()).trim()) || 0;
           controller.enqueue(line({ type: "team.loaded", data: { count: teamCount, provider: "chatgpt" } }));
 
@@ -276,10 +338,15 @@ export async function POST(request: Request) {
             "sandbox_workspace_write.network_access=true",
           ];
           if (model && model !== "auto") args.push("--model", model);
-          if (reasoningEffort) args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', '')}\"`);
+          if (reasoningEffort) {
+            args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
+          }
           args.push(teamPrompt);
 
-          controller.enqueue(line({ type: "control.status", data: { message: "Equipo conectado a tu ChatGPT. Arrancando Codex…" } }));
+          controller.enqueue(line({
+            type: "control.status",
+            data: { message: "Equipo conectado a tu ChatGPT. Arrancando Codex…" },
+          }));
           const command = await sandbox.runCommand({
             cmd: "bash",
             args: ["-lc", 'export PATH="$HOME/.local/bin:$PATH"; exec codex "$@"', "codex", ...args],
@@ -302,11 +369,14 @@ export async function POST(request: Request) {
             }
           }
           if (pending.trim()) {
-            try { emitCodexEvent(controller, JSON.parse(pending) as JsonRecord); } catch {}
+            try {
+              emitCodexEvent(controller, JSON.parse(pending) as JsonRecord);
+            } catch {}
           }
           const finished = await command.wait();
           if (finished.exitCode !== 0) throw new Error(`Codex runtime exited with code ${finished.exitCode}`);
         } else {
+          if (!github) throw new Error("GitHub connection required for Copilot");
           await sandbox.writeFiles([
             { path: "/tmp/copilot-runner.mjs", content: Buffer.from(copilotRunnerSource) },
             { path: "/tmp/package.json", content: Buffer.from(JSON.stringify({ type: "module", private: true })) },
@@ -317,7 +387,9 @@ export async function POST(request: Request) {
             cmd: "npm",
             args: ["install", "--prefix", "/tmp", "@github/copilot-sdk@1.0.14", "--no-audit", "--no-fund"],
           });
-          if (install.exitCode !== 0) throw new Error(`Copilot SDK install failed: ${(await install.stderr()).slice(-1200)}`);
+          if (install.exitCode !== 0) {
+            throw new Error(`Copilot SDK install failed: ${(await install.stderr()).slice(-1200)}`);
+          }
 
           controller.enqueue(line({ type: "control.status", data: { message: "Equipo conectado. Arrancando ejecución…" } }));
           const command = await sandbox.runCommand({
@@ -326,7 +398,7 @@ export async function POST(request: Request) {
             cwd: repoDir,
             detached: true,
             env: {
-              COPILOT_GITHUB_TOKEN: auth.token,
+              COPILOT_GITHUB_TOKEN: github.token,
               COPILOT_MODEL: model,
               COPILOT_TASK: prompt,
               COPILOT_AGENT_DIR: "/tmp/equipo-producto-ia-agents/.codex/agents",
@@ -340,13 +412,19 @@ export async function POST(request: Request) {
             pending = parts.pop() ?? "";
             for (const part of parts) {
               if (!part.trim()) continue;
-              try { controller.enqueue(line(JSON.parse(part))); }
-              catch { controller.enqueue(line({ type: "runtime.log", data: { message: part } })); }
+              try {
+                controller.enqueue(line(JSON.parse(part)));
+              } catch {
+                controller.enqueue(line({ type: "runtime.log", data: { message: part } }));
+              }
             }
           }
           if (pending.trim()) {
-            try { controller.enqueue(line(JSON.parse(pending))); }
-            catch { controller.enqueue(line({ type: "runtime.log", data: { message: pending } })); }
+            try {
+              controller.enqueue(line(JSON.parse(pending)));
+            } catch {
+              controller.enqueue(line({ type: "runtime.log", data: { message: pending } }));
+            }
           }
           const finished = await command.wait();
           if (finished.exitCode !== 0) throw new Error(`Agent runtime exited with code ${finished.exitCode}`);
@@ -360,7 +438,10 @@ export async function POST(request: Request) {
 
         if (!changedWorkingTree && !agentCreatedCommits) {
           controller.enqueue(line({ type: "workspace.diff", data: { changed: "", diffStat: "" } }));
-          controller.enqueue(line({ type: "control.done", data: { message: "La ejecución terminó sin cambios de archivos." } }));
+          controller.enqueue(line({
+            type: "control.done",
+            data: { message: "La ejecución terminó sin cambios de archivos.", delivery: github ? "github" : "guest" },
+          }));
           return;
         }
 
@@ -374,28 +455,52 @@ export async function POST(request: Request) {
           if (commit.exitCode !== 0) throw new Error(`Commit failed: ${(await commit.stderr()).slice(-1200)}`);
         }
 
-        const diffStatResult = await sandbox.runCommand({ cmd: "git", args: ["diff", "--stat", `${baseSha}..HEAD`], cwd: repoDir });
-        const diffNamesResult = await sandbox.runCommand({ cmd: "git", args: ["diff", "--name-status", `${baseSha}..HEAD`], cwd: repoDir });
+        const diffStatResult = await sandbox.runCommand({
+          cmd: "git",
+          args: ["diff", "--stat", `${baseSha}..HEAD`],
+          cwd: repoDir,
+        });
+        const diffNamesResult = await sandbox.runCommand({
+          cmd: "git",
+          args: ["diff", "--name-status", `${baseSha}..HEAD`],
+          cwd: repoDir,
+        });
         const diffStat = (await diffStatResult.stdout()).trim();
         const changed = (await diffNamesResult.stdout()).trim();
         controller.enqueue(line({ type: "workspace.diff", data: { changed, diffStat } }));
 
+        if (!github) {
+          controller.enqueue(line({
+            type: "control.done",
+            data: {
+              repo,
+              provider,
+              baseBranch,
+              diffStat,
+              delivery: "guest",
+              message: "Cambios generados en Sandbox. Conectá GitHub para publicar una rama y crear el PR automáticamente.",
+            },
+          }));
+          return;
+        }
+
         controller.enqueue(line({ type: "control.status", data: { message: "Publicando rama en GitHub…" } }));
         const push = await sandbox.runCommand({
           cmd: "bash",
-          args: ["-lc", 'AUTH=$(printf "x-access-token:%s" "$GH_PUSH_TOKEN" | base64 | tr -d "\\n"); git -c http.extraHeader="Authorization: Basic $AUTH" push -u origin "HEAD:$RUN_BRANCH"'],
+          args: [
+            "-lc",
+            'AUTH=$(printf "x-access-token:%s" "$GH_PUSH_TOKEN" | base64 | tr -d "\\n"); git -c http.extraHeader="Authorization: Basic $AUTH" push -u origin "HEAD:$RUN_BRANCH"',
+          ],
           cwd: repoDir,
-          env: { GH_PUSH_TOKEN: auth.token, RUN_BRANCH: runBranch },
+          env: { GH_PUSH_TOKEN: github.token, RUN_BRANCH: runBranch },
         });
         if (push.exitCode !== 0) throw new Error(`Push failed: ${(await push.stderr()).slice(-1200)}`);
 
         const prResponse = await fetch(`https://api.github.com/repos/${repo}/pulls`, {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${auth.token}`,
-            Accept: "application/vnd.github+json",
+            ...githubHeaders(github.token),
             "Content-Type": "application/json",
-            "X-GitHub-Api-Version": "2022-11-28",
           },
           body: JSON.stringify({
             title: `AI Control Room: ${prompt.slice(0, 72)}`,
@@ -415,14 +520,29 @@ export async function POST(request: Request) {
           }),
         });
         const pr = (await prResponse.json()) as { html_url?: string; number?: number; message?: string };
-        if (!prResponse.ok || !pr.html_url) throw new Error(`Branch pushed but PR creation failed: ${pr.message ?? prResponse.status}`);
+        if (!prResponse.ok || !pr.html_url) {
+          throw new Error(`Branch pushed but PR creation failed: ${pr.message ?? prResponse.status}`);
+        }
 
         controller.enqueue(line({
           type: "control.done",
-          data: { repo, provider, baseBranch, branch: runBranch, prUrl: pr.html_url, prNumber: pr.number, diffStat },
+          data: {
+            repo,
+            provider,
+            baseBranch,
+            branch: runBranch,
+            prUrl: pr.html_url,
+            prNumber: pr.number,
+            diffStat,
+            delivery: "github",
+            actor,
+          },
         }));
       } catch (error) {
-        controller.enqueue(line({ type: "control.error", data: { message: error instanceof Error ? error.message : String(error) } }));
+        controller.enqueue(line({
+          type: "control.error",
+          data: { message: error instanceof Error ? error.message : String(error) },
+        }));
       } finally {
         if (sandbox) await sandbox.stop().catch(() => undefined);
         controller.close();
