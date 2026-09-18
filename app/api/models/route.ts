@@ -23,19 +23,16 @@ export async function GET() {
     await client.start();
     const models = await client.listModels();
     return NextResponse.json({
-      models: models.map((model) => ({
-        id: model.id,
-        name: model.name ?? model.id,
-        policy: model.policy ?? null,
-        capabilities: model.capabilities ?? null,
-        billing: model.billing ?? null,
+      models: models.map((availableModel) => ({
+        id: availableModel.id,
+        displayName: availableModel.displayName ?? availableModel.id,
       })),
     });
   } catch (error) {
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : String(error),
-        models: [{ id: "auto", name: "Auto" }],
+        models: [{ id: "auto", displayName: "Auto · Copilot decide" }],
       },
       { status: 502 },
     );
