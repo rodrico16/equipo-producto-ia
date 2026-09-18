@@ -9,11 +9,16 @@ export async function GET() {
     const identity = await requireControlRoomIdentity();
     const state = await readChatGPTLoginState(identity.key);
 
-    if (state.status === "pending") return Response.json(state);
-
+    // Never trust the local pending marker as the only source of truth. The
+    // app-server notification that completes device auth can be lost if the
+    // sandbox/process is resumed. account/read lets us recover from that case.
     try {
       const account = await runCodexRpc(identity.key, "account-read");
-      const value = (account.account ?? null) as null | { type?: string; planType?: string; email?: string | null };
+      const value = (account.account ?? null) as null | {
+        type?: string;
+        planType?: string;
+        email?: string | null;
+      };
       if (value) {
         return Response.json({
           status: "connected",
@@ -22,7 +27,10 @@ export async function GET() {
           email: value.email ?? null,
         });
       }
-    } catch {}
+    } catch {
+      // While device auth is still genuinely pending, account/read can fail.
+      // Preserve the pending/device-code state in that case.
+    }
 
     return Response.json(state.status === "connected" ? { status: "disconnected" } : state);
   } catch (error) {
