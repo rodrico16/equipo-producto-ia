@@ -75,32 +75,41 @@ async function readStateFromSandbox(sandbox: Sandbox): Promise<ChatGPTLoginState
 
 export async function readChatGPTLoginState(login: string) {
   const sandbox = await prepare(login);
-  try {
-    return await readStateFromSandbox(sandbox);
-  } finally {
+  const state = await readStateFromSandbox(sandbox);
+
+  // While device auth is pending, the app-server process must stay alive in the
+  // named sandbox so OpenAI can deliver account/login/completed asynchronously.
+  if (state.status !== "pending") {
     await sandbox.stop().catch(() => undefined);
   }
+  return state;
 }
 
 export async function startChatGPTDeviceLogin(login: string) {
   const sandbox = await prepare(login);
+  let keepAlive = false;
   try {
     await sandbox.runCommand("bash", ["-lc", 'rm -f "$HOME/.codex/control-room-login.json"']);
-    await sandbox.runCommand({
+    const command = await sandbox.runCommand({
       cmd: "node",
       args: [rpcPath],
       detached: true,
       env: { CODEX_RPC_MODE: "login-start" },
     });
 
-    for (let attempt = 0; attempt < 16; attempt += 1) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       const state = await readStateFromSandbox(sandbox);
-      if (state.status !== "disconnected") return state;
+      if (state.status !== "disconnected") {
+        keepAlive = state.status === "pending";
+        return state;
+      }
+      const result = await command.wait().catch(() => null);
+      if (result && result.exitCode !== 0) break;
     }
     throw new Error("Codex did not return a device code in time");
   } finally {
-    await sandbox.stop().catch(() => undefined);
+    if (!keepAlive) await sandbox.stop().catch(() => undefined);
   }
 }
 
