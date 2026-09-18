@@ -328,8 +328,6 @@ export async function POST(request: Request) {
           ].join("\n");
 
           const args = [
-            "exec",
-            "--json",
             "--sandbox",
             "workspace-write",
             "--ask-for-approval",
@@ -341,7 +339,7 @@ export async function POST(request: Request) {
           if (reasoningEffort) {
             args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
           }
-          args.push(teamPrompt);
+          args.push("exec", "--json", teamPrompt);
 
           controller.enqueue(line({
             type: "control.status",
@@ -355,6 +353,7 @@ export async function POST(request: Request) {
           });
 
           let pending = "";
+          const diagnostics: string[] = [];
           for await (const log of command.logs()) {
             pending += log.data;
             const parts = pending.split("\n");
@@ -364,6 +363,7 @@ export async function POST(request: Request) {
               try {
                 emitCodexEvent(controller, JSON.parse(part) as JsonRecord);
               } catch {
+                diagnostics.push(part.trim());
                 controller.enqueue(line({ type: "runtime.log", data: { message: part } }));
               }
             }
@@ -371,10 +371,15 @@ export async function POST(request: Request) {
           if (pending.trim()) {
             try {
               emitCodexEvent(controller, JSON.parse(pending) as JsonRecord);
-            } catch {}
+            } catch {
+              diagnostics.push(pending.trim());
+            }
           }
           const finished = await command.wait();
-          if (finished.exitCode !== 0) throw new Error(`Codex runtime exited with code ${finished.exitCode}`);
+          if (finished.exitCode !== 0) {
+            const detail = diagnostics.slice(-5).join(" | ").slice(-1600);
+            throw new Error(`Codex runtime exited with code ${finished.exitCode}${detail ? `: ${detail}` : ""}`);
+          }
         } else {
           if (!github) throw new Error("GitHub connection required for Copilot");
           await sandbox.writeFiles([
