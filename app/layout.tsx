@@ -7,10 +7,30 @@ export const metadata: Metadata = {
   description: "Orquestación visual de agentes de producto e ingeniería con GitHub Copilot o ChatGPT / Codex.",
 };
 
+const storageMigration = `
+try {
+  const oldChatsKey = "epia_control_room_chats_v2";
+  const oldActiveKey = "epia_control_room_active_chat_v2";
+  const newChatsKey = "epia_control_room_chats_v3";
+  const newActiveKey = "epia_control_room_active_chat_v3";
+  if (!localStorage.getItem(newChatsKey)) {
+    const previousChats = localStorage.getItem(oldChatsKey);
+    if (previousChats) localStorage.setItem(newChatsKey, previousChats);
+  }
+  if (!localStorage.getItem(newActiveKey)) {
+    const previousActive = localStorage.getItem(oldActiveKey);
+    if (previousActive) localStorage.setItem(newActiveKey, previousActive);
+  }
+} catch {}
+`;
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="es">
-      <body>{children}</body>
+      <body>
+        <script dangerouslySetInnerHTML={{ __html: storageMigration }} />
+        {children}
+      </body>
     </html>
   );
 }
