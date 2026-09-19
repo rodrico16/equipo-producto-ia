@@ -25,6 +25,25 @@ function line(payload: unknown) {
   return encoder.encode(JSON.stringify(payload) + "\n");
 }
 
+function safeEnqueue(controller: ReadableStreamDefaultController<Uint8Array>, payload: unknown) {
+  try {
+    controller.enqueue(line(payload));
+    return true;
+  } catch {
+    // Mobile Safari can tear down a streaming fetch while the sandbox is still
+    // running. Do not turn a client disconnect into an agent cancellation.
+    return false;
+  }
+}
+
+function safeClose(controller: ReadableStreamDefaultController<Uint8Array>) {
+  try {
+    controller.close();
+  } catch {
+    // The consumer may already have cancelled the response body.
+  }
+}
+
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" ? (value as JsonRecord) : {};
 }
@@ -53,26 +72,26 @@ function emitCodexEvent(controller: ReadableStreamDefaultController<Uint8Array>,
   const agentName = codexAgentName(item);
 
   if (type === "thread.started") {
-    controller.enqueue(line({ type: "run.started", agentId: "supervisor", data: { provider: "chatgpt" } }));
+    safeEnqueue(controller, { type: "run.started", agentId: "supervisor", data: { provider: "chatgpt" } });
     return;
   }
   if (type === "turn.started") {
-    controller.enqueue(line({ type: "control.status", data: { message: "ChatGPT/Codex está coordinando el equipo…" } }));
+    safeEnqueue(controller, { type: "control.status", data: { message: "ChatGPT/Codex está coordinando el equipo…" } });
     return;
   }
   if (type === "turn.completed") {
     const usage = asRecord(event.usage);
     const input = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
     const output = typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
-    controller.enqueue(line({
+    safeEnqueue(controller, {
       type: "run.completed",
       agentId: "supervisor",
       data: { totalTokens: input + output, provider: "chatgpt" },
-    }));
+    });
     return;
   }
   if (type === "turn.failed" || type === "error") {
-    controller.enqueue(line({
+    safeEnqueue(controller, {
       type: "run.failed",
       agentId: "supervisor",
       data: {
@@ -81,56 +100,56 @@ function emitCodexEvent(controller: ReadableStreamDefaultController<Uint8Array>,
           asString(asRecord(event.error).message) ||
           "Codex execution failed",
       },
-    }));
+    });
     return;
   }
 
   const looksLikeSubagent = itemType.includes("subagent") || itemType.includes("collab") || Boolean(agentName);
   if (looksLikeSubagent && agentName) {
     if (type === "item.started") {
-      controller.enqueue(line({
+      safeEnqueue(controller, {
         type: "subagent.started",
         agentId: asString(item.agent_id) || itemId,
         data: { agentName, model: asString(item.model) },
-      }));
+      });
     } else if (type === "item.completed") {
-      controller.enqueue(line({
+      safeEnqueue(controller, {
         type: "subagent.completed",
         agentId: asString(item.agent_id) || itemId,
         data: { agentName },
-      }));
+      });
     }
   }
 
   if (type === "item.started" && itemType === "command_execution") {
-    controller.enqueue(line({
+    safeEnqueue(controller, {
       type: "tool.started",
       agentId: agentName || "supervisor",
       data: { toolName: asString(item.command) || "command" },
-    }));
+    });
     return;
   }
 
   if (type === "item.completed" && itemType === "command_execution") {
-    controller.enqueue(line({
+    safeEnqueue(controller, {
       type: "tool.completed",
       agentId: agentName || "supervisor",
       data: {
         success: asString(item.status) !== "failed",
         toolName: asString(item.command) || "command",
       },
-    }));
+    });
     return;
   }
 
   if (type === "item.completed" && itemType === "agent_message") {
     const text = asString(item.text) || asString(item.content);
     if (text) {
-      controller.enqueue(line({
+      safeEnqueue(controller, {
         type: "agent.message",
         agentId: agentName || "supervisor",
         data: { content: text, messageId: itemId },
-      }));
+      });
     }
   }
 }
@@ -180,8 +199,12 @@ export async function POST(request: Request) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let sandbox: Sandbox | undefined;
+      const heartbeat = setInterval(() => {
+        safeEnqueue(controller, { type: "stream.heartbeat", data: { at: Date.now() } });
+      }, 10_000);
+
       try {
-        controller.enqueue(line({ type: "control.status", data: { message: "Validando repositorio…" } }));
+        safeEnqueue(controller, { type: "control.status", data: { message: "Validando repositorio…" } });
 
         const repoResponse = await fetch(`https://api.github.com/repos/${repo}`, {
           headers: githubHeaders(github?.token),
@@ -204,13 +227,13 @@ export async function POST(request: Request) {
         const actor = github?.login || "guest";
         let repoDir: string;
 
-        controller.enqueue(line({
+        safeEnqueue(controller, {
           type: "control.status",
           data: {
             message: `Creando sandbox ${provider === "chatgpt" ? "ChatGPT/Codex" : "Copilot"} para ${repo}@${baseBranch}`,
             branch: github ? runBranch : null,
           },
-        }));
+        });
 
         if (provider === "chatgpt") {
           sandbox = await createChatGPTWorkerSandbox(chatGPTAuth!);
@@ -291,7 +314,7 @@ export async function POST(request: Request) {
           cwd: repoDir,
         });
 
-        controller.enqueue(line({ type: "control.status", data: { message: "Cargando los perfiles del equipo…" } }));
+        safeEnqueue(controller, { type: "control.status", data: { message: "Cargando los perfiles del equipo…" } });
         const agentsClone = await sandbox.runCommand("git", [
           "clone",
           "--depth",
@@ -308,7 +331,7 @@ export async function POST(request: Request) {
             cmd: "bash",
             args: [
               "-lc",
-              'mkdir -p .codex/agents; cp -n /tmp/equipo-producto-ia-agents/.codex/agents/*.toml .codex/agents/; if [ -z "$(git ls-files \'.codex/**\')" ]; then grep -qxF "/.codex/" .git/info/exclude || echo "/.codex/" >> .git/info/exclude; fi; find .codex/agents -maxdepth 1 -name "*.toml" | wc -l',
+              'mkdir -p .codex/agents; cp -n /tmp/equipo-producto-ia-agents/.codex/agents/*.toml .codex/agents/; if [ -z "$(git ls-files \' .codex/**\')" ]; then grep -qxF "/.codex/" .git/info/exclude || echo "/.codex/" >> .git/info/exclude; fi; find .codex/agents -maxdepth 1 -name "*.toml" | wc -l',
             ],
             cwd: repoDir,
           });
@@ -316,7 +339,7 @@ export async function POST(request: Request) {
             throw new Error(`Could not install Codex agent profiles: ${(await installAgents.stderr()).slice(-1000)}`);
           }
           const teamCount = Number((await installAgents.stdout()).trim()) || 0;
-          controller.enqueue(line({ type: "team.loaded", data: { count: teamCount, provider: "chatgpt" } }));
+          safeEnqueue(controller, { type: "team.loaded", data: { count: teamCount, provider: "chatgpt" } });
 
           const teamPrompt = [
             "Act as the parent coordinator for the AI Product Team.",
@@ -334,10 +357,10 @@ export async function POST(request: Request) {
           }
           args.push("exec", "--json", teamPrompt);
 
-          controller.enqueue(line({
+          safeEnqueue(controller, {
             type: "control.status",
             data: { message: "Equipo conectado a tu ChatGPT. Arrancando Codex…" },
-          }));
+          });
           const command = await sandbox.runCommand({
             cmd: "bash",
             args: ["-lc", 'export PATH="$HOME/.local/bin:$PATH"; exec codex "$@"', "codex", ...args],
@@ -357,7 +380,7 @@ export async function POST(request: Request) {
                 emitCodexEvent(controller, JSON.parse(part) as JsonRecord);
               } catch {
                 diagnostics.push(part.trim());
-                controller.enqueue(line({ type: "runtime.log", data: { message: part } }));
+                safeEnqueue(controller, { type: "runtime.log", data: { message: part } });
               }
             }
           }
@@ -380,7 +403,7 @@ export async function POST(request: Request) {
             { path: "/tmp/package.json", content: Buffer.from(JSON.stringify({ type: "module", private: true })) },
           ]);
 
-          controller.enqueue(line({ type: "control.status", data: { message: "Preparando GitHub Copilot SDK…" } }));
+          safeEnqueue(controller, { type: "control.status", data: { message: "Preparando GitHub Copilot SDK…" } });
           const install = await sandbox.runCommand({
             cmd: "npm",
             args: ["install", "--prefix", "/tmp", "@github/copilot-sdk@1.0.14", "--no-audit", "--no-fund"],
@@ -389,7 +412,7 @@ export async function POST(request: Request) {
             throw new Error(`Copilot SDK install failed: ${(await install.stderr()).slice(-1200)}`);
           }
 
-          controller.enqueue(line({ type: "control.status", data: { message: "Equipo conectado. Arrancando ejecución…" } }));
+          safeEnqueue(controller, { type: "control.status", data: { message: "Equipo conectado. Arrancando ejecución…" } });
           const command = await sandbox.runCommand({
             cmd: "node",
             args: ["/tmp/copilot-runner.mjs"],
@@ -411,17 +434,17 @@ export async function POST(request: Request) {
             for (const part of parts) {
               if (!part.trim()) continue;
               try {
-                controller.enqueue(line(JSON.parse(part)));
+                safeEnqueue(controller, JSON.parse(part));
               } catch {
-                controller.enqueue(line({ type: "runtime.log", data: { message: part } }));
+                safeEnqueue(controller, { type: "runtime.log", data: { message: part } });
               }
             }
           }
           if (pending.trim()) {
             try {
-              controller.enqueue(line(JSON.parse(pending)));
+              safeEnqueue(controller, JSON.parse(pending));
             } catch {
-              controller.enqueue(line({ type: "runtime.log", data: { message: pending } }));
+              safeEnqueue(controller, { type: "runtime.log", data: { message: pending } });
             }
           }
           const finished = await command.wait();
@@ -435,11 +458,11 @@ export async function POST(request: Request) {
         const agentCreatedCommits = headAfterAgent !== baseSha;
 
         if (!changedWorkingTree && !agentCreatedCommits) {
-          controller.enqueue(line({ type: "workspace.diff", data: { changed: "", diffStat: "" } }));
-          controller.enqueue(line({
+          safeEnqueue(controller, { type: "workspace.diff", data: { changed: "", diffStat: "" } });
+          safeEnqueue(controller, {
             type: "control.done",
             data: { message: "La ejecución terminó sin cambios de archivos.", delivery: github ? "github" : "guest" },
-          }));
+          });
           return;
         }
 
@@ -465,10 +488,10 @@ export async function POST(request: Request) {
         });
         const diffStat = (await diffStatResult.stdout()).trim();
         const changed = (await diffNamesResult.stdout()).trim();
-        controller.enqueue(line({ type: "workspace.diff", data: { changed, diffStat } }));
+        safeEnqueue(controller, { type: "workspace.diff", data: { changed, diffStat } });
 
         if (!github) {
-          controller.enqueue(line({
+          safeEnqueue(controller, {
             type: "control.done",
             data: {
               repo,
@@ -478,11 +501,11 @@ export async function POST(request: Request) {
               delivery: "guest",
               message: "Cambios generados en Sandbox. Conectá GitHub para publicar una rama y crear el PR automáticamente.",
             },
-          }));
+          });
           return;
         }
 
-        controller.enqueue(line({ type: "control.status", data: { message: "Publicando rama en GitHub…" } }));
+        safeEnqueue(controller, { type: "control.status", data: { message: "Publicando rama en GitHub…" } });
         const push = await sandbox.runCommand({
           cmd: "bash",
           args: [
@@ -522,7 +545,7 @@ export async function POST(request: Request) {
           throw new Error(`Branch pushed but PR creation failed: ${pr.message ?? prResponse.status}`);
         }
 
-        controller.enqueue(line({
+        safeEnqueue(controller, {
           type: "control.done",
           data: {
             repo,
@@ -535,15 +558,16 @@ export async function POST(request: Request) {
             delivery: "github",
             actor,
           },
-        }));
+        });
       } catch (error) {
-        controller.enqueue(line({
+        safeEnqueue(controller, {
           type: "control.error",
           data: { message: error instanceof Error ? error.message : String(error) },
-        }));
+        });
       } finally {
+        clearInterval(heartbeat);
         if (sandbox) await sandbox.stop().catch(() => undefined);
-        controller.close();
+        safeClose(controller);
       }
     },
   });
@@ -551,8 +575,9 @@ export async function POST(request: Request) {
   return new Response(stream, {
     headers: {
       "Content-Type": "application/x-ndjson; charset=utf-8",
-      "Cache-Control": "no-store, no-transform",
+      "Cache-Control": "no-cache, no-store, no-transform",
       "X-Content-Type-Options": "nosniff",
+      "X-Accel-Buffering": "no",
     },
   });
 }
