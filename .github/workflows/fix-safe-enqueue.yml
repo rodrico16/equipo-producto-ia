@@ -1,0 +1,37 @@
+name: Correct safe enqueue helper
+
+on:
+  push:
+    branches:
+      - fix/resilient-long-runs
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/resilient-long-runs
+          fetch-depth: 0
+      - name: Correct helper
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/api/run/route.ts')
+          s = p.read_text()
+          old = '''function safeEnqueue(\n  controller: ReadableStreamDefaultController<Uint8Array>,\n  payload: unknown,\n) {\n  try {\n    safeEnqueue(controller, payload);\n    return true;\n'''
+          new = '''function safeEnqueue(\n  controller: ReadableStreamDefaultController<Uint8Array>,\n  payload: unknown,\n) {\n  try {\n    controller.enqueue(line(payload));\n    return true;\n'''
+          if old not in s:
+              raise SystemExit('safeEnqueue recursion anchor not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          rm .github/workflows/fix-safe-enqueue.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/api/run/route.ts .github/workflows/fix-safe-enqueue.yml
+          git commit -m "fix: correct safe stream enqueue"
+          git push origin HEAD:fix/resilient-long-runs
