@@ -219,15 +219,31 @@ export async function POST(request: Request) {
 
         if (mode === "draft") {
           await sandbox.runCommand({ cmd: "git", args: ["add", "-N", "."], cwd }).catch(() => undefined);
-          const diff = await sandbox.runCommand({ cmd: "git", args: ["diff", "--stat"], cwd });
-          const status = await sandbox.runCommand({ cmd: "git", args: ["status", "--short"], cwd });
-          controller.enqueue(line({
-            type: "workspace.diff",
-            data: { diffStat: (await diff.stdout()).trim(), changed: (await status.stdout()).trim() },
-          }));
+          const diffStatResult = await sandbox.runCommand({ cmd: "git", args: ["diff", "--stat"], cwd });
+          const statusResult = await sandbox.runCommand({ cmd: "git", args: ["status", "--short"], cwd });
+          const patchResult = await sandbox.runCommand({ cmd: "git", args: ["diff", "--no-ext-diff", "--unified=3"], cwd });
+          const diffStat = (await diffStatResult.stdout()).trim();
+          const changed = (await statusResult.stdout()).trim();
+          const fullPatch = (await patchResult.stdout()).trim();
+          const maxPatchChars = 60_000;
+          const patch = fullPatch.length > maxPatchChars
+            ? `${fullPatch.slice(0, maxPatchChars)}\n\n... patch truncado en la UI (${fullPatch.length - maxPatchChars} caracteres adicionales)`
+            : fullPatch;
+
+          controller.enqueue(line({ type: "workspace.diff", data: { diffStat, changed } }));
+          if (patch) {
+            controller.enqueue(line({
+              type: "agent.message",
+              agentId: "supervisor",
+              data: {
+                messageId: `draft-patch-${Date.now()}`,
+                content: `### Patch del borrador\n\n\`\`\`diff\n${patch}\n\`\`\``,
+              },
+            }));
+          }
           controller.enqueue(line({
             type: "control.done",
-            data: { delivery: "draft", repo, baseBranch, message: "Borrador terminado. No se escribió nada en GitHub." },
+            data: { delivery: "draft", repo, baseBranch, message: "Borrador terminado. El patch quedó guardado en este chat y no se escribió nada en GitHub." },
           }));
         } else {
           controller.enqueue(line({ type: "control.done", data: { delivery: "chat", message: "Chat terminado." } }));
