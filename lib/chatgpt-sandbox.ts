@@ -67,8 +67,13 @@ export async function createChatGPTAuthSandbox() {
   return sandbox;
 }
 
-export async function createChatGPTWorkerSandbox(authJson: string, timeout = 20 * 60 * 1000) {
+export async function createChatGPTWorkerSandbox(
+  authJson: string,
+  timeout = 20 * 60 * 1000,
+  name?: string,
+) {
   const sandbox = await Sandbox.create({
+    ...(name ? { name } : {}),
     persistent: false,
     timeout,
     networkPolicy: CHATGPT_WORKER_NETWORK_POLICY,
