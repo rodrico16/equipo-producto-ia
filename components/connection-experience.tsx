@@ -9,6 +9,7 @@ type Flow = {
   code?: string | null;
   url?: string | null;
   error?: string | null;
+  needsCopyToContinue?: boolean;
 };
 
 export function ConnectionExperience() {
@@ -25,7 +26,7 @@ export function ConnectionExperience() {
     stopPolling();
     try { popupRef.current?.close(); } catch {}
     popupRef.current = null;
-    setFlow((current) => current ? { ...current, title: "Conectado", message: "Listo. Actualizando tu espacio…", code: null } : null);
+    setFlow((current) => current ? { ...current, title: "Conectado", message: "Listo. Actualizando tu espacio…", code: null, needsCopyToContinue: false } : null);
     window.setTimeout(() => window.location.reload(), 450);
   }
 
@@ -68,33 +69,60 @@ export function ConnectionExperience() {
     void pollGitHub();
   }
 
+  async function copyAndOpenChatGPT(code: string, url: string) {
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(code);
+      copied = true;
+    } catch {}
+
+    if (!copied) {
+      setFlow((current) => current ? {
+        ...current,
+        title: "Copiá el código para continuar",
+        message: "Safari necesita que confirmes la copia. Tocá “Copiar código y continuar”; recién después abrimos ChatGPT.",
+        needsCopyToContinue: true,
+      } : current);
+      return false;
+    }
+
+    const popup = popupRef.current && !popupRef.current.closed
+      ? popupRef.current
+      : openPopup("about:blank", "epia-chatgpt");
+    if (popup && !popup.closed) popup.location.href = url;
+    else window.open(url, "_blank", "noopener,noreferrer");
+
+    setFlow((current) => current ? {
+      ...current,
+      title: "Aprobá en ChatGPT",
+      message: "Código copiado. Pegalo cuando ChatGPT te lo pida; esta pantalla detecta la aprobación sola.",
+      needsCopyToContinue: false,
+    } : current);
+    void pollChatGPT();
+    return true;
+  }
+
   async function startChatGPT() {
     stopPolling();
+    // Open a harmless same-origin popup synchronously to avoid iOS popup blocking.
+    // We never navigate it to OpenAI until the device code has been copied.
     const popup = openPopup("about:blank", "epia-chatgpt");
-    setFlow({ provider: "chatgpt", title: "Conectando ChatGPT", message: "Preparando la autorización segura…" });
+    setFlow({ provider: "chatgpt", title: "Preparando ChatGPT", message: "Generando tu código de autorización…" });
 
     try {
       const response = await fetch("/api/chatgpt/login", { method: "POST" });
       const body = await response.json() as { verificationUrl?: string; userCode?: string; error?: string };
       if (!response.ok || !body.verificationUrl || !body.userCode) throw new Error(body.error || "No se pudo iniciar la autorización de ChatGPT");
 
-      let copied = false;
-      try {
-        await navigator.clipboard.writeText(body.userCode);
-        copied = true;
-      } catch {}
-
-      if (popup && !popup.closed) popup.location.href = body.verificationUrl;
       setFlow({
         provider: "chatgpt",
-        title: "Aprobá en ChatGPT",
-        message: copied
-          ? "Abrimos ChatGPT y copiamos el código. Pegalo cuando te lo pida; esta pantalla detecta la aprobación sola."
-          : "Abrimos ChatGPT. Ingresá el código cuando te lo pida; esta pantalla detecta la aprobación sola.",
+        title: "Copiando código…",
+        message: "Primero copiamos el código. Después abrimos ChatGPT.",
         code: body.userCode,
         url: body.verificationUrl,
       });
-      void pollChatGPT();
+
+      await copyAndOpenChatGPT(body.userCode, body.verificationUrl);
     } catch (error) {
       try { popup?.close(); } catch {}
       setFlow({
@@ -104,6 +132,35 @@ export function ConnectionExperience() {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  async function manualCopyAndContinue() {
+    if (!flow?.code || !flow.url) return;
+    try {
+      await navigator.clipboard.writeText(flow.code);
+    } catch {
+      setFlow((current) => current ? {
+        ...current,
+        title: "No pudimos copiar automáticamente",
+        message: "Mantené presionado el código para copiarlo y después tocá “Abrir ChatGPT”.",
+        needsCopyToContinue: true,
+      } : current);
+      return;
+    }
+
+    const popup = popupRef.current && !popupRef.current.closed
+      ? popupRef.current
+      : openPopup("about:blank", "epia-chatgpt");
+    if (popup && !popup.closed) popup.location.href = flow.url;
+    else window.open(flow.url, "_blank", "noopener,noreferrer");
+
+    setFlow((current) => current ? {
+      ...current,
+      title: "Aprobá en ChatGPT",
+      message: "Código copiado. Pegalo cuando ChatGPT te lo pida; esta pantalla detecta la aprobación sola.",
+      needsCopyToContinue: false,
+    } : current);
+    void pollChatGPT();
   }
 
   useEffect(() => {
@@ -139,7 +196,7 @@ export function ConnectionExperience() {
 
     const onFocus = () => {
       if (flow?.provider === "github") void pollGitHub();
-      if (flow?.provider === "chatgpt") void pollChatGPT();
+      if (flow?.provider === "chatgpt" && !flow.needsCopyToContinue) void pollChatGPT();
     };
 
     document.addEventListener("click", onClick, true);
@@ -151,7 +208,7 @@ export function ConnectionExperience() {
       window.removeEventListener("focus", onFocus);
       stopPolling();
     };
-  }, [flow?.provider]);
+  }, [flow?.provider, flow?.needsCopyToContinue]);
 
   if (!flow) return null;
 
@@ -165,9 +222,16 @@ export function ConnectionExperience() {
             <span style={{ display: "block", color: "#9aacb5", fontSize: 12, lineHeight: 1.5, marginTop: 4 }}>{flow.message}</span>
             {flow.code && <button onClick={() => navigator.clipboard.writeText(flow.code || "")} style={{ marginTop: 10, border: "1px solid #34505a", borderRadius: 9, padding: "8px 11px", background: "#0b141a", color: "#e9edef", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontWeight: 800 }}>{flow.code} · copiar</button>}
           </div>
-          <button onClick={() => { stopPolling(); setFlow(null); }} aria-label="Cerrar" style={{ width: 32, height: 32, border: 0, borderRadius: 999, background: "transparent", color: "#94a5ad", fontSize: 22 }}>×</button>
+          <button onClick={() => { stopPolling(); try { popupRef.current?.close(); } catch {} setFlow(null); }} aria-label="Cerrar" style={{ width: 32, height: 32, border: 0, borderRadius: 999, background: "transparent", color: "#94a5ad", fontSize: 22 }}>×</button>
         </div>
-        {flow.url && <button onClick={() => openPopup(flow.url || "about:blank", `epia-${flow.provider}`)} style={{ width: "100%", marginTop: 14, border: 0, borderRadius: 10, padding: "11px 14px", background: "#00a884", color: "#041b16", fontWeight: 850 }}>Abrir autorización</button>}
+
+        {flow.provider === "chatgpt" && flow.needsCopyToContinue && (
+          <button onClick={() => void manualCopyAndContinue()} style={{ width: "100%", marginTop: 14, border: 0, borderRadius: 10, padding: "12px 14px", background: "#00a884", color: "#041b16", fontWeight: 850 }}>Copiar código y continuar</button>
+        )}
+
+        {flow.url && !flow.needsCopyToContinue && flow.provider !== "chatgpt" && (
+          <button onClick={() => openPopup(flow.url || "about:blank", `epia-${flow.provider}`)} style={{ width: "100%", marginTop: 14, border: 0, borderRadius: 10, padding: "11px 14px", background: "#00a884", color: "#041b16", fontWeight: 850 }}>Abrir autorización</button>
+        )}
       </div>
     </div>
   );
