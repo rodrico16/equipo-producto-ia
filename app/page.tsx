@@ -215,6 +215,29 @@ export default function Home() {
     }));
   }, [chatGPTModels]);
 
+  useEffect(() => {
+    if (!session?.githubConnected || !copilotModels.length) return;
+    const preferred = copilotModels.find((m) => m.isDefault) ?? copilotModels[0];
+    setChats((current) => current.map((chat) => {
+      if (chat.provider !== "copilot" || copilotModels.some((m) => m.id === chat.model)) return chat;
+      return { ...chat, model: preferred.id, reasoningEffort: preferred.defaultReasoningEffort || preferred.reasoningEfforts?.[0]?.id || "" };
+    }));
+  }, [session?.githubConnected, copilotModels]);
+
+  useEffect(() => {
+    if (!session?.githubConnected || chatGPT.status === "connected" || !copilotModels.length) return;
+    const preferred = copilotModels.find((m) => m.isDefault) ?? copilotModels[0];
+    setChats((current) => current.map((chat) => {
+      if (chat.provider !== "chatgpt" || chat.messages.length || chat.title !== "Nuevo chat") return chat;
+      return {
+        ...chat,
+        provider: "copilot",
+        model: preferred.id,
+        reasoningEffort: preferred.defaultReasoningEffort || preferred.reasoningEfforts?.[0]?.id || "",
+      };
+    }));
+  }, [session?.githubConnected, chatGPT.status, copilotModels]);
+
   const active = useMemo(() => chats.find((chat) => chat.id === activeId) ?? chats[0], [chats, activeId]);
   const runningCount = chats.filter((chat) => chat.running).length;
   const visibleChats = useMemo(() => {
@@ -300,10 +323,15 @@ export default function Home() {
 
   function createChat() {
     const chat = defaultChat();
-    if (chatGPTModels.length) {
-      const preferred = chatGPTModels.find((m) => m.isDefault) ?? chatGPTModels[0];
+    const useCopilot = Boolean(session?.githubConnected && chatGPT.status !== "connected");
+    const catalog = useCopilot ? copilotModels : chatGPTModels;
+    chat.provider = useCopilot ? "copilot" : "chatgpt";
+    if (catalog.length) {
+      const preferred = catalog.find((m) => m.isDefault) ?? catalog[0];
       chat.model = preferred.id;
       chat.reasoningEffort = preferred.defaultReasoningEffort || preferred.reasoningEfforts?.[0]?.id || "";
+    } else if (useCopilot) {
+      chat.model = "auto";
     }
     setChats((current) => [chat, ...current]);
     setActiveId(chat.id); setSettingsOpen(true); setMobileListOpen(false);
@@ -324,7 +352,7 @@ export default function Home() {
     if (!active || active.running) return;
     updateChat(active.id, (chat) => ({
       ...chat, mode,
-      provider: mode === "pr" ? chat.provider : "chatgpt",
+      provider: chat.provider === "copilot" && !session?.githubConnected ? "chatgpt" : chat.provider,
       repo: mode === "chat" ? "" : chat.repo,
       branch: mode === "chat" ? "main" : chat.branch,
       updatedAt: Date.now(),
@@ -332,12 +360,12 @@ export default function Home() {
   }
   function changeProvider(provider: Provider) {
     if (!active || active.running) return;
-    if (provider === "copilot" && (active.mode !== "pr" || !session?.githubConnected)) return;
+    if (provider === "copilot" && !session?.githubConnected) return;
     const catalog = provider === "copilot" ? copilotModels : chatGPTModels;
     const preferred = catalog.find((m) => m.isDefault) ?? catalog[0];
     updateChat(active.id, (chat) => ({
       ...chat, provider, model: preferred?.id || (provider === "copilot" ? "auto" : ""),
-      reasoningEffort: provider === "chatgpt" ? preferred?.defaultReasoningEffort || preferred?.reasoningEfforts?.[0]?.id || "" : "",
+      reasoningEffort: preferred?.defaultReasoningEffort || preferred?.reasoningEfforts?.[0]?.id || "",
     }));
   }
   function changeModel(modelId: string) {
@@ -345,7 +373,7 @@ export default function Home() {
     const option = activeModels.find((m) => m.id === modelId);
     updateChat(active.id, (chat) => ({
       ...chat, model: modelId,
-      reasoningEffort: chat.provider === "chatgpt" ? option?.defaultReasoningEffort || option?.reasoningEfforts?.[0]?.id || "" : "",
+      reasoningEffort: option?.defaultReasoningEffort || option?.reasoningEfforts?.[0]?.id || "",
     }));
   }
   function changeRepo(fullName: string) {
@@ -442,7 +470,11 @@ export default function Home() {
     }));
 
     try {
-      const endpoint = thread.mode === "pr" ? "/api/run" : "/api/chat-run";
+      const endpoint = thread.mode === "pr"
+        ? "/api/run"
+        : thread.provider === "copilot"
+          ? "/api/copilot-run"
+          : "/api/chat-run";
       const payload = thread.mode === "pr"
         ? { repo: thread.repo, branch: thread.branch, provider: thread.provider, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt }
         : { mode: thread.mode, repo: thread.repo, branch: thread.branch, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt };
@@ -485,7 +517,7 @@ export default function Home() {
   const chatGPTConnected = chatGPT.status === "connected";
   const githubConnected = Boolean(session.githubConnected);
   const repoMode = active.mode !== "chat";
-  const copilotAvailable = active.mode === "pr" && githubConnected;
+  const copilotAvailable = githubConnected;
 
   return (
     <main className={`${s.app} ${mobileListOpen ? s.showList : ""}`}>
@@ -517,7 +549,7 @@ export default function Home() {
             {session.user?.avatarUrl ? <img src={session.user.avatarUrl} alt="" /> : <span className={s.accountFallback}>ME</span>}
             <div className={s.accountText}>
               <strong>{githubConnected ? `@${session.user?.login}` : "GitHub sin conectar"}</strong>
-              <span>{chatGPTConnected ? `ChatGPT ${chatGPT.planType || "conectado"}` : "ChatGPT desconectado"}</span>
+              <span>{chatGPTConnected ? `ChatGPT ${chatGPT.planType || "conectado"}` : githubConnected ? "Copilot disponible" : "ChatGPT desconectado"}</span>
             </div>
           </div>
           <button className={s.newChat} onClick={createChat}>＋ Nuevo chat</button>
@@ -538,7 +570,7 @@ export default function Home() {
         <div className={s.contextBar}>
           <span className={s.contextChip}><strong>{modeLabel(active.mode)}</strong></span>
           <span className={s.contextChip}>{active.provider === "chatgpt" ? "ChatGPT" : "Copilot"} · <strong>{selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</strong></span>
-          {active.provider === "chatgpt" && active.reasoningEffort && <span className={s.contextChip}>esfuerzo · <strong>{active.reasoningEffort}</strong></span>}
+          {active.reasoningEffort && <span className={s.contextChip}>esfuerzo · <strong>{active.reasoningEffort}</strong></span>}
           {repoMode && <span className={s.contextChip}>repo · <strong>{active.repo || "sin elegir"}</strong></span>}
         </div>
 
@@ -565,7 +597,7 @@ export default function Home() {
 
         <footer className={s.composerShell}>
           {active.running && <div className={s.running}><span className={s.spinner} /><span>{active.status}</span><button onClick={createChat}>Abrir otro chat</button></div>}
-          {active.provider === "chatgpt" && !chatGPTConnected && <div className={s.warning}>Conectá ChatGPT desde ⚙ para usar este chat.</div>}
+          {active.provider === "chatgpt" && !chatGPTConnected && <div className={s.warning}>Conectá ChatGPT desde ⚙ para usar este chat, o elegí GitHub Copilot.</div>}
           {active.provider === "copilot" && !githubConnected && <div className={s.warning}>Conectá GitHub desde ⚙ para usar Copilot.</div>}
           {repoMode && !active.repo && <div className={s.warning}>Elegí o creá un repositorio desde ⚙.</div>}
           <div className={s.composer}>
@@ -592,16 +624,16 @@ export default function Home() {
             <section className={s.section}>
               <div className={s.sectionTitle}><strong>Modelo</strong></div>
               <div className={s.grid}>
-                <label className={s.field}>Proveedor<select value={active.provider} onChange={(e) => changeProvider(e.target.value as Provider)} disabled={active.running}><option value="chatgpt">ChatGPT / Codex</option><option value="copilot" disabled={!copilotAvailable}>GitHub Copilot{!copilotAvailable ? " · requiere Repo + PR" : ""}</option></select></label>
+                <label className={s.field}>Proveedor<select value={active.provider} onChange={(e) => changeProvider(e.target.value as Provider)} disabled={active.running}><option value="chatgpt">ChatGPT / Codex</option><option value="copilot" disabled={!copilotAvailable}>GitHub Copilot{!copilotAvailable ? " · conectá GitHub" : ""}</option></select></label>
                 <label className={s.field}>Modelo<select value={active.model} onChange={(e) => changeModel(e.target.value)} disabled={!activeModels.length || active.running}>{!activeModels.length && <option value="">Sin modelos disponibles</option>}{activeModels.map((model) => <option value={model.id} key={model.id}>{model.displayName || model.name || model.id}</option>)}</select></label>
-                {active.provider === "chatgpt" && <label className={s.field}>Esfuerzo<select value={active.reasoningEffort} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, reasoningEffort: e.target.value }))} disabled={!reasoning.length || active.running}>{!reasoning.length && <option value={active.reasoningEffort || ""}>{active.reasoningEffort || "Predeterminado"}</option>}{reasoning.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}</select></label>}
+                {reasoning.length > 0 && <label className={s.field}>Esfuerzo<select value={active.reasoningEffort} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, reasoningEffort: e.target.value }))} disabled={active.running}>{reasoning.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}</select></label>}
               </div>
             </section>
 
             <section className={s.section}>
               <div className={s.sectionTitle}><strong>ChatGPT</strong></div>
               <div className={s.connection}>
-                <div className={s.connectionCopy}><strong>{chatGPTConnected ? "ChatGPT conectado" : chatGPT.status === "pending" ? "Esperando autorización" : "ChatGPT desconectado"}</strong><span>{chatGPTConnected ? `${chatGPT.planType || "Plan ChatGPT"}${chatGPT.email ? ` · ${chatGPT.email}` : ""}` : "La sesión se mantiene en Vercel y no expone el token al navegador."}</span></div>
+                <div className={s.connectionCopy}><strong>{chatGPTConnected ? "ChatGPT conectado" : chatGPT.status === "pending" ? "Esperando autorización" : "ChatGPT desconectado"}</strong><span>{chatGPTConnected ? `${chatGPT.planType || "Plan ChatGPT"}${chatGPT.email ? ` · ${chatGPT.email}` : ""}` : githubConnected ? "Opcional: podés trabajar sólo con GitHub Copilot." : "Conectá tu cuenta para usar Codex."}</span></div>
                 {chatGPTConnected ? <button className={s.smallButton} onClick={() => fetch("/api/chatgpt/logout", { method: "POST" }).then(() => { setChatGPT({ status: "disconnected" }); setChatGPTModels([]); })}>Desconectar</button> : chatGPT.status === "pending" ? <a className={s.primaryButton} href={chatGPT.verificationUrl || "https://auth.openai.com/codex/device"} target="_blank" rel="noreferrer">{chatGPT.userCode || "Abrir código"}</a> : <button className={s.primaryButton} onClick={() => void connectChatGPT()} disabled={connectingChatGPT}>{connectingChatGPT ? "Conectando…" : "Conectar"}</button>}
               </div>
               {connectionError && <div className={s.statusError}>{connectionError}</div>}
@@ -610,8 +642,8 @@ export default function Home() {
             <section className={s.section}>
               <div className={s.sectionTitle}><strong>GitHub</strong>{githubConnected && <button onClick={() => void syncRepos()}>{repoLoading ? "Sincronizando…" : "↻ Sincronizar repos"}</button>}</div>
               <div className={s.connection}>
-                <div className={s.connectionCopy}><strong>{githubConnected ? `@${session.user?.login}` : "GitHub no conectado"}</strong><span>{githubConnected ? `${repos.length} repos cargados · públicos, privados y de organizaciones accesibles` : session.githubConfigured ? "Conectá cualquier cuenta GitHub para traer sus repos." : "Para usar GitHub, configurá la OAuth App en Vercel."}</span></div>
-                {githubConnected ? <><button className={s.smallButton} onClick={() => void switchGitHubAccount()}>Cambiar cuenta</button><button className={s.smallButton} onClick={() => void disconnectGitHub()}>Salir</button></> : session.githubConfigured ? <a className={s.primaryButton} href="/api/auth/github">Conectar GitHub</a> : null}
+                <div className={s.connectionCopy}><strong>{githubConnected ? `@${session.user?.login}` : "GitHub no conectado"}</strong><span>{githubConnected ? `${repos.length} repos cargados · Copilot disponible con la suscripción de esta cuenta` : "Conectá GitHub para usar Copilot y traer tus repos."}</span></div>
+                {githubConnected ? <><button className={s.smallButton} onClick={() => void switchGitHubAccount()}>Cambiar cuenta</button><button className={s.smallButton} onClick={() => void disconnectGitHub()}>Salir</button></> : <a className={s.primaryButton} href="/api/auth/github">Conectar GitHub</a>}
               </div>
               {repoError && <div className={s.statusError}>{repoError}</div>}
             </section>
