@@ -25,11 +25,20 @@ try {
 } catch {}
 `;
 
+const runRecoveryRegistration = `
+try {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/run-recovery-sw.js", { scope: "/" }).catch(() => {});
+  }
+} catch {}
+`;
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="es">
       <body>
         <script dangerouslySetInnerHTML={{ __html: storageMigration }} />
+        <script dangerouslySetInnerHTML={{ __html: runRecoveryRegistration }} />
         {children}
         <ConnectionExperience />
       </body>
