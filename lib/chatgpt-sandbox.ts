@@ -22,34 +22,6 @@ export const CHATGPT_WORKER_NETWORK_POLICY = {
   ],
 };
 
-type ForkOptions = Parameters<typeof Sandbox.fork>[0];
-type HardenedGlobal = typeof globalThis & { __epiaChatGPTForkHardened?: boolean };
-
-const PRIVATE_AUTH_SANDBOX = "chatgpt-codex-private";
-const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
-
-const hardenedGlobal = globalThis as HardenedGlobal;
-if (!hardenedGlobal.__epiaChatGPTForkHardened) {
-  const originalFork = Sandbox.fork.bind(Sandbox);
-  Sandbox.fork = (async (options: ForkOptions) => {
-    if (
-      typeof options.sourceSandbox === "string" &&
-      options.sourceSandbox.startsWith("chatgpt-codex-")
-    ) {
-      return originalFork({ ...options, persistent: false, networkPolicy: CHATGPT_WORKER_NETWORK_POLICY });
-    }
-    return originalFork(options);
-  }) as typeof Sandbox.fork;
-  hardenedGlobal.__epiaChatGPTForkHardened = true;
-}
-
-// The deployment is protected by Vercel Authentication and is intentionally
-// single-user. Reusing one named auth sandbox avoids creating one persistent
-// snapshot chain per browser/chat identity.
-export function chatGPTSandboxName(_identity?: string) {
-  return PRIVATE_AUTH_SANDBOX;
-}
-
 async function ensureCodex(sandbox: Sandbox) {
   const check = await sandbox.runCommand("bash", [
     "-lc",
@@ -66,37 +38,48 @@ async function ensureCodex(sandbox: Sandbox) {
       "command -v codex >/dev/null 2>&1",
     ].join("; "),
   ]);
-
   if (install.exitCode !== 0) {
     throw new Error(`Codex installation failed: ${(await install.stderr()).slice(-1200)}`);
   }
 }
 
-async function hardenPersistentSandbox(sandbox: Sandbox) {
-  await ensureCodex(sandbox);
-  await sandbox.update({
-    networkPolicy: CHATGPT_AUTH_NETWORK_POLICY,
-    persistent: true,
-    snapshotExpiration: ONE_WEEK,
-    keepLastSnapshots: { count: 1 },
-  });
+async function restoreAuth(sandbox: Sandbox, authJson?: string | null) {
+  if (!authJson) return;
+  await sandbox.runCommand("bash", ["-lc", 'mkdir -p "$HOME/.codex" && chmod 700 "$HOME/.codex"']);
+  await sandbox.writeFiles([
+    { path: "/home/vercel-sandbox/.codex/auth.json", content: Buffer.from(authJson, "utf8") },
+  ]);
+  await sandbox.runCommand("bash", ["-lc", 'chmod 600 "$HOME/.codex/auth.json"']);
 }
 
-export async function getChatGPTSandbox(identity?: string) {
-  const sandbox = await Sandbox.getOrCreate({
-    name: chatGPTSandboxName(identity),
-    resume: true,
-    snapshotExpiration: ONE_WEEK,
-    keepLastSnapshots: { count: 1 },
-    onCreate: hardenPersistentSandbox,
-    onResume: hardenPersistentSandbox,
-  });
-
-  await sandbox.update({
+export async function createChatGPTAuthSandbox() {
+  const sandbox = await Sandbox.create({
+    persistent: false,
+    timeout: 12 * 60 * 1000,
     networkPolicy: CHATGPT_AUTH_NETWORK_POLICY,
-    persistent: true,
-    snapshotExpiration: ONE_WEEK,
-    keepLastSnapshots: { count: 1 },
   });
+  await ensureCodex(sandbox);
   return sandbox;
+}
+
+export async function createChatGPTWorkerSandbox(authJson: string, timeout = 20 * 60 * 1000) {
+  const sandbox = await Sandbox.create({
+    persistent: false,
+    timeout,
+    networkPolicy: CHATGPT_WORKER_NETWORK_POLICY,
+  });
+  await ensureCodex(sandbox);
+  await restoreAuth(sandbox, authJson);
+  return sandbox;
+}
+
+export async function readCodexAuthFile(sandbox: Sandbox) {
+  const result = await sandbox.runCommand("bash", [
+    "-lc",
+    'if [ -f "$HOME/.codex/auth.json" ]; then cat "$HOME/.codex/auth.json"; else exit 44; fi',
+  ]);
+  if (result.exitCode !== 0) throw new Error("Codex did not persist ChatGPT credentials");
+  const value = (await result.stdout()).trim();
+  JSON.parse(value);
+  return value;
 }
