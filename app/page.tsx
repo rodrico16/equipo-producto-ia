@@ -448,6 +448,47 @@ export default function Home() {
     }
   }
 
+  function isNetworkStreamError(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return error instanceof TypeError || /load failed|failed to fetch|networkerror|network connection was lost|stream ended before completion/i.test(message);
+  }
+
+  async function recoverPrRun(chatId: string, runId: string, repo: string, branch: string) {
+    updateChat(chatId, (chat) => ({
+      ...chat,
+      running: true,
+      status: "Conexión interrumpida · recuperando ejecución…",
+      error: "",
+      updatedAt: Date.now(),
+    }));
+    system(chatId, "Se cortó la conexión del iPhone. La ejecución sigue del lado del servidor; estoy recuperando el resultado…", "neutral", runId);
+
+    for (let attempt = 0; attempt < 55; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 1_500 : 5_000));
+      try {
+        const query = new URLSearchParams({ repo, branch });
+        const response = await fetch(`/api/run-status?${query.toString()}`, { cache: "no-store" });
+        if (!response.ok) continue;
+        const body = await response.json() as { state?: string; prUrl?: string };
+        if (body.state === "completed" && body.prUrl) {
+          updateChat(chatId, (chat) => ({
+            ...chat,
+            running: false,
+            status: "Ejecución recuperada",
+            prUrl: body.prUrl || chat.prUrl,
+            error: "",
+            updatedAt: Date.now(),
+          }));
+          system(chatId, "Conexión recuperada · el PR quedó listo para revisar", "good", runId);
+          return true;
+        }
+      } catch {
+        // iOS can briefly suspend networking; keep polling until the run window closes.
+      }
+    }
+    return false;
+  }
+
   async function startRun(chatId: string) {
     const thread = chats.find((chat) => chat.id === chatId);
     if (!thread || thread.running || !thread.draft.trim()) return;
@@ -458,6 +499,8 @@ export default function Home() {
 
     const prompt = thread.draft.trim();
     const runId = id("run");
+    let remoteBranch = "";
+    let terminalEventSeen = false;
     agentMaps.current[chatId] = { supervisor: "supervisor" };
     const context = thread.messages.filter((m) => m.kind === "user" || m.kind === "agent").slice(-12)
       .map((m) => `${m.kind === "user" ? "USUARIO" : m.displayName || "AGENTE"}: ${m.text}`).join("\n\n");
@@ -486,19 +529,35 @@ export default function Home() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      const consumeEvent = (event: StreamEvent) => {
+        const eventBranch = asString(event.data?.branch);
+        if (eventBranch) remoteBranch = eventBranch;
+        if (event.type === "control.done" || event.type === "control.error" || event.type === "run.failed") terminalEventSeen = true;
+        handleEvent(chatId, runId, thread.provider, thread.model, event);
+      };
       while (true) {
         const { value, done } = await reader.read();
         buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
-        for (const raw of lines) if (raw.trim()) handleEvent(chatId, runId, thread.provider, thread.model, JSON.parse(raw) as StreamEvent);
+        for (const raw of lines) if (raw.trim()) consumeEvent(JSON.parse(raw) as StreamEvent);
         if (done) break;
       }
-      if (buffer.trim()) handleEvent(chatId, runId, thread.provider, thread.model, JSON.parse(buffer) as StreamEvent);
+      if (buffer.trim()) consumeEvent(JSON.parse(buffer) as StreamEvent);
+      if (!terminalEventSeen) throw new TypeError("Stream ended before completion");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Ejecución detenida", error: message, updatedAt: Date.now() }));
-      system(chatId, message, "bad", runId);
+      const recoverable = thread.mode === "pr" && Boolean(remoteBranch) && Boolean(session?.githubConnected) && isNetworkStreamError(error);
+      if (recoverable) {
+        const recovered = await recoverPrRun(chatId, runId, thread.repo, remoteBranch);
+        if (recovered) return;
+        const recoveryMessage = "La conexión se interrumpió y no apareció un PR dentro de la ventana de recuperación. Podés reintentar el pedido; no marco ningún cambio como entregado.";
+        updateChat(chatId, (chat) => ({ ...chat, running: false, status: "No se pudo recuperar la ejecución", error: recoveryMessage, updatedAt: Date.now() }));
+        system(chatId, recoveryMessage, "bad", runId);
+      } else {
+        updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Ejecución detenida", error: message, updatedAt: Date.now() }));
+        system(chatId, message, "bad", runId);
+      }
     } finally {
       updateChat(chatId, (chat) => chat.running ? { ...chat, running: false, updatedAt: Date.now() } : chat);
     }
