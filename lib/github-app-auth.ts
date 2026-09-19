@@ -57,5 +57,9 @@ export async function consumeManifestState(received: string | null) {
   const store = await cookies();
   const expected = store.get(MANIFEST_STATE_COOKIE)?.value;
   store.set(MANIFEST_STATE_COOKIE, "", { ...secureCookie, maxAge: 0 });
-  return Boolean(received && expected && crypto.timingSafeEqual(Buffer.from(received), Buffer.from(expected)));
+  if (!received || !expected) return false;
+  const receivedBuffer = Buffer.from(received);
+  const expectedBuffer = Buffer.from(expected);
+  if (receivedBuffer.length !== expectedBuffer.length) return false;
+  return crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
 }
