@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { Sandbox } from "@vercel/sandbox";
 
 export const CHATGPT_AUTH_NETWORK_POLICY = {
@@ -24,14 +23,11 @@ export const CHATGPT_WORKER_NETWORK_POLICY = {
 };
 
 type ForkOptions = Parameters<typeof Sandbox.fork>[0];
+type HardenedGlobal = typeof globalThis & { __epiaChatGPTForkHardened?: boolean };
 
-type HardenedGlobal = typeof globalThis & {
-  __epiaChatGPTForkHardened?: boolean;
-};
+const PRIVATE_AUTH_SANDBOX = "chatgpt-codex-private";
+const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
 
-// app/api/run currently forks the persistent ChatGPT sandbox. Enforce the
-// worker firewall at the shared SDK boundary so a caller cannot accidentally
-// widen egress with networkPolicy: "allow-all".
 const hardenedGlobal = globalThis as HardenedGlobal;
 if (!hardenedGlobal.__epiaChatGPTForkHardened) {
   const originalFork = Sandbox.fork.bind(Sandbox);
@@ -40,19 +36,18 @@ if (!hardenedGlobal.__epiaChatGPTForkHardened) {
       typeof options.sourceSandbox === "string" &&
       options.sourceSandbox.startsWith("chatgpt-codex-")
     ) {
-      return originalFork({
-        ...options,
-        networkPolicy: CHATGPT_WORKER_NETWORK_POLICY,
-      });
+      return originalFork({ ...options, persistent: false, networkPolicy: CHATGPT_WORKER_NETWORK_POLICY });
     }
     return originalFork(options);
   }) as typeof Sandbox.fork;
   hardenedGlobal.__epiaChatGPTForkHardened = true;
 }
 
-export function chatGPTSandboxName(login: string) {
-  const suffix = createHash("sha256").update(login.toLowerCase()).digest("hex").slice(0, 20);
-  return `chatgpt-codex-${suffix}`;
+// The deployment is protected by Vercel Authentication and is intentionally
+// single-user. Reusing one named auth sandbox avoids creating one persistent
+// snapshot chain per browser/chat identity.
+export function chatGPTSandboxName(_identity?: string) {
+  return PRIVATE_AUTH_SANDBOX;
 }
 
 async function ensureCodex(sandbox: Sandbox) {
@@ -79,19 +74,29 @@ async function ensureCodex(sandbox: Sandbox) {
 
 async function hardenPersistentSandbox(sandbox: Sandbox) {
   await ensureCodex(sandbox);
-  await sandbox.update({ networkPolicy: CHATGPT_AUTH_NETWORK_POLICY });
+  await sandbox.update({
+    networkPolicy: CHATGPT_AUTH_NETWORK_POLICY,
+    persistent: true,
+    snapshotExpiration: ONE_WEEK,
+    keepLastSnapshots: { count: 1 },
+  });
 }
 
-export async function getChatGPTSandbox(login: string) {
+export async function getChatGPTSandbox(identity?: string) {
   const sandbox = await Sandbox.getOrCreate({
-    name: chatGPTSandboxName(login),
+    name: chatGPTSandboxName(identity),
     resume: true,
+    snapshotExpiration: ONE_WEEK,
+    keepLastSnapshots: { count: 1 },
     onCreate: hardenPersistentSandbox,
     onResume: hardenPersistentSandbox,
   });
 
-  // Reassert the firewall on every access in case the named sandbox was already
-  // running and no lifecycle callback fired.
-  await sandbox.update({ networkPolicy: CHATGPT_AUTH_NETWORK_POLICY });
+  await sandbox.update({
+    networkPolicy: CHATGPT_AUTH_NETWORK_POLICY,
+    persistent: true,
+    snapshotExpiration: ONE_WEEK,
+    keepLastSnapshots: { count: 1 },
+  });
   return sandbox;
 }
