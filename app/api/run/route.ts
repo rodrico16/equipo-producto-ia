@@ -30,7 +30,7 @@ function safeEnqueue(
   payload: unknown,
 ) {
   try {
-    safeEnqueue(controller, payload);
+    controller.enqueue(line(payload));
     return true;
   } catch {
     // A mobile browser can drop the HTTP reader while the server-side job is
