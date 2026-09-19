@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ConnectionExperience } from "@/components/connection-experience";
 import "./globals.css";
 import "./provider.css";
 
@@ -30,6 +31,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body>
         <script dangerouslySetInnerHTML={{ __html: storageMigration }} />
         {children}
+        <ConnectionExperience />
       </body>
     </html>
   );
