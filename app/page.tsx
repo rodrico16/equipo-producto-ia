@@ -6,6 +6,7 @@ import s from "./page.module.css";
 
 type Provider = "chatgpt" | "copilot";
 type ChatMode = "chat" | "draft" | "pr";
+type ChatFilter = "all" | "running" | "error" | "pr" | "repo" | "copilot" | "chatgpt";
 
 type SessionState = {
   authenticated: boolean;
@@ -74,10 +75,22 @@ type ChatThread = {
   prUrl: string;
   error: string;
 };
+type TimelineItem =
+  | { type: "message"; id: string; message: ChatMessage }
+  | { type: "tools"; id: string; messages: ChatMessage[] };
 
 const STORAGE_KEY = "epia_control_room_chats_v3";
 const ACTIVE_KEY = "epia_control_room_active_chat_v3";
 const COPILOT_FALLBACK: ModelOption[] = [{ id: "auto", displayName: "Auto · Copilot decide" }];
+const FILTERS: { id: ChatFilter; label: string }[] = [
+  { id: "all", label: "Todos" },
+  { id: "running", label: "Activos" },
+  { id: "error", label: "Con error" },
+  { id: "pr", label: "Con PR" },
+  { id: "repo", label: "Repos" },
+  { id: "copilot", label: "Copilot" },
+  { id: "chatgpt", label: "ChatGPT" },
+];
 
 function id(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -111,6 +124,33 @@ function modeLabel(mode: ChatMode) {
   if (mode === "draft") return "Repo · borrador";
   return "Solo chat";
 }
+function isToolMessage(message: ChatMessage) {
+  return message.kind === "system" && (message.text.includes(" usa ") || message.text.startsWith("Herramienta de "));
+}
+function toolOwner(text: string) {
+  if (text.includes(" usa ")) return text.split(" usa ")[0];
+  const match = text.match(/^Herramienta de (.+?) falló/);
+  return match?.[1] || "Equipo";
+}
+function buildTimeline(messages: ChatMessage[]): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  let bucket: ChatMessage[] = [];
+  const flush = () => {
+    if (!bucket.length) return;
+    items.push({ type: "tools", id: `tools-${bucket[0].id}`, messages: bucket });
+    bucket = [];
+  };
+  for (const message of messages) {
+    if (isToolMessage(message)) {
+      bucket.push(message);
+      continue;
+    }
+    flush();
+    items.push({ type: "message", id: message.id, message });
+  }
+  flush();
+  return items;
+}
 
 export default function Home() {
   const [session, setSession] = useState<SessionState | null>(null);
@@ -131,7 +171,9 @@ export default function Home() {
   const [activeId, setActiveId] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<ChatFilter>("all");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [newChatWizard, setNewChatWizard] = useState(false);
   const [mobileListOpen, setMobileListOpen] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const agentMaps = useRef<Record<string, Record<string, string>>>({});
@@ -144,6 +186,10 @@ export default function Home() {
       setSession(sessionBody as SessionState);
       setAgents((agentsBody as { agents?: AgentDefinition[] }).agents ?? []);
     }).catch(() => setSession({ authenticated: true, mode: "guest", githubConnected: false }));
+  }, []);
+
+  useEffect(() => {
+    if (window.matchMedia("(max-width: 840px)").matches) setMobileListOpen(true);
   }, []);
 
   useEffect(() => {
@@ -242,13 +288,24 @@ export default function Home() {
   const runningCount = chats.filter((chat) => chat.running).length;
   const visibleChats = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    const sorted = [...chats].sort((a, b) => b.updatedAt - a.updatedAt);
-    return needle ? sorted.filter((chat) => `${chat.title} ${preview(chat)} ${chat.repo}`.toLowerCase().includes(needle)) : sorted;
-  }, [chats, search]);
+    return [...chats]
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .filter((chat) => !needle || `${chat.title} ${preview(chat)} ${chat.repo} ${chat.provider}`.toLowerCase().includes(needle))
+      .filter((chat) => {
+        if (filter === "running") return chat.running;
+        if (filter === "error") return Boolean(chat.error);
+        if (filter === "pr") return Boolean(chat.prUrl) || chat.mode === "pr";
+        if (filter === "repo") return chat.mode !== "chat";
+        if (filter === "copilot") return chat.provider === "copilot";
+        if (filter === "chatgpt") return chat.provider === "chatgpt";
+        return true;
+      });
+  }, [chats, search, filter]);
   const activeModels = active?.provider === "copilot" ? copilotModels : chatGPTModels;
   const selectedModel = activeModels.find((m) => m.id === active?.model);
   const reasoning = selectedModel?.reasoningEfforts ?? [];
   const selectedRepo = repos.find((repo) => repo.fullName === active?.repo);
+  const timeline = useMemo(() => buildTimeline(active?.messages ?? []), [active?.messages]);
   const canSend = Boolean(active && active.draft.trim() && !active.running && (
     active.provider === "chatgpt" ? chatGPT.status === "connected" : session?.githubConnected
   ) && (active.mode === "chat" || Boolean(active.repo)) && (active.mode !== "pr" || session?.githubConnected));
@@ -334,10 +391,13 @@ export default function Home() {
       chat.model = "auto";
     }
     setChats((current) => [chat, ...current]);
-    setActiveId(chat.id); setSettingsOpen(true); setMobileListOpen(false);
+    setActiveId(chat.id);
+    setNewChatWizard(true);
+    setSettingsOpen(true);
+    setMobileListOpen(false);
   }
   function openChat(chatId: string) {
-    setActiveId(chatId); setMobileListOpen(false); setSettingsOpen(false);
+    setActiveId(chatId); setMobileListOpen(false); setSettingsOpen(false); setNewChatWizard(false);
   }
   function deleteChat(chatId: string) {
     const target = chats.find((chat) => chat.id === chatId);
@@ -523,106 +583,133 @@ export default function Home() {
     <main className={`${s.app} ${mobileListOpen ? s.showList : ""}`}>
       <aside className={s.sidebar}>
         <div className={s.sidebarTop}>
-          <div className={s.profileRow}>
-            <div className={s.brand}>AI</div>
-            <div className={s.productCopy}><strong>Product Team</strong><span>{runningCount ? `${runningCount} chat${runningCount > 1 ? "s" : ""} trabajando` : "Control Room"}</span></div>
-            <button className={s.iconButton} onClick={createChat} aria-label="Nuevo chat">＋</button>
+          <div className={s.listHeader}>
+            <button className={s.circleButton} onClick={() => { setNewChatWizard(false); setSettingsOpen(true); }} aria-label="Cuenta y conexiones">•••</button>
+            <h1>Chats</h1>
+            <div className={s.listHeaderActions}>
+              <button className={`${s.connectionDot} ${githubConnected || chatGPTConnected ? s.connectionDotOn : ""}`} onClick={() => { setNewChatWizard(false); setSettingsOpen(true); }} aria-label="Conexiones">◎</button>
+              <button className={s.addChatButton} onClick={createChat} aria-label="Nuevo chat">＋</button>
+            </div>
           </div>
-          <div className={s.search}><span>⌕</span><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar chats" /></div>
+          <label className={s.search}><span>⌕</span><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar chats o preguntar" /></label>
+          <div className={s.filters}>
+            {FILTERS.map((item) => <button key={item.id} className={filter === item.id ? s.filterActive : ""} onClick={() => setFilter(item.id)}>{item.label}</button>)}
+          </div>
         </div>
+
         <div className={s.threadList}>
-          {visibleChats.map((chat) => (
-            <div className={`${s.thread} ${chat.id === active.id ? s.threadActive : ""}`} key={chat.id}>
-              <button className={s.threadMain} onClick={() => openChat(chat.id)}>
-                <span className={s.threadAvatar}>{chat.provider === "copilot" ? "GH" : "GPT"}</span>
-                <span className={s.threadBody}>
-                  <span className={s.threadTitleRow}><strong>{chat.title}</strong><time>{time(chat.updatedAt)}</time></span>
-                  <span className={s.threadPreview}>{chat.running && <span className={s.spinner} />}<span>{preview(chat)}</span></span>
-                </span>
-              </button>
-              {!chat.running && chats.length > 1 && <button className={s.threadDelete} onClick={() => deleteChat(chat.id)} aria-label="Eliminar chat">×</button>}
-            </div>
-          ))}
+          {!visibleChats.length && <div className={s.emptyList}><strong>No hay chats acá</strong><span>Probá otro filtro o empezá una conversación nueva.</span><button onClick={createChat}>＋ Nuevo chat</button></div>}
+          {visibleChats.map((chat) => {
+            const meta = [chat.provider === "copilot" ? "Copilot" : "ChatGPT", modeLabel(chat.mode), chat.repo].filter(Boolean).join(" · ");
+            return (
+              <div className={`${s.thread} ${chat.id === active.id ? s.threadActive : ""}`} key={chat.id}>
+                <button className={s.threadMain} onClick={() => openChat(chat.id)}>
+                  <span className={`${s.threadAvatar} ${chat.provider === "copilot" ? s.avatarCopilot : s.avatarGpt}`}>{chat.provider === "copilot" ? "GH" : "GPT"}</span>
+                  <span className={s.threadBody}>
+                    <span className={s.threadTitleRow}><strong>{chat.title}</strong><time>{time(chat.updatedAt)}</time></span>
+                    <span className={s.threadPreview}>{chat.running && <span className={s.spinner} />}<span>{preview(chat)}</span></span>
+                    <span className={s.threadMeta}>{meta}</span>
+                  </span>
+                  {(chat.running || chat.error || chat.prUrl) && <span className={`${s.threadState} ${chat.error ? s.stateError : chat.running ? s.stateRunning : s.stateDone}`}>{chat.error ? "!" : chat.running ? "●" : "PR"}</span>}
+                </button>
+                {!chat.running && chats.length > 1 && <button className={s.threadDelete} onClick={() => deleteChat(chat.id)} aria-label="Eliminar chat">×</button>}
+              </div>
+            );
+          })}
         </div>
-        <div className={s.accountCard}>
-          <div className={s.accountLine}>
-            {session.user?.avatarUrl ? <img src={session.user.avatarUrl} alt="" /> : <span className={s.accountFallback}>ME</span>}
-            <div className={s.accountText}>
-              <strong>{githubConnected ? `@${session.user?.login}` : "GitHub sin conectar"}</strong>
-              <span>{chatGPTConnected ? `ChatGPT ${chatGPT.planType || "conectado"}` : githubConnected ? "Copilot disponible" : "ChatGPT desconectado"}</span>
-            </div>
-          </div>
-          <button className={s.newChat} onClick={createChat}>＋ Nuevo chat</button>
+
+        <div className={s.accountBar}>
+          <button className={s.accountButton} onClick={() => { setNewChatWizard(false); setSettingsOpen(true); }}>
+            {session.user?.avatarUrl ? <img src={session.user.avatarUrl} alt="" /> : <span className={s.accountFallback}>AI</span>}
+            <span><strong>{githubConnected ? `@${session.user?.login}` : "Conexiones"}</strong><small>{githubConnected && chatGPTConnected ? "GitHub + ChatGPT" : githubConnected ? "Copilot disponible" : chatGPTConnected ? "ChatGPT conectado" : "Configurar cuentas"}</small></span>
+          </button>
+          <button className={s.tabActive}>Chats{runningCount ? <b>{runningCount}</b> : null}</button>
         </div>
       </aside>
 
       <section className={s.main}>
         <header className={s.header}>
-          <button className={s.mobileBack} onClick={() => setMobileListOpen(true)} aria-label="Ver chats">‹</button>
-          <span className={s.chatAvatar}>{active.provider === "copilot" ? "GH" : "GPT"}</span>
-          <div className={s.headerCopy}><strong>{active.title}</strong><span>{active.running ? active.status : `${active.usedAgents.length} agentes participaron`}</span></div>
+          <button className={s.mobileBack} onClick={() => setMobileListOpen(true)} aria-label="Volver a chats">‹</button>
+          <span className={`${s.chatAvatar} ${active.provider === "copilot" ? s.avatarCopilot : s.avatarGpt}`}>{active.provider === "copilot" ? "GH" : "GPT"}</span>
+          <button className={s.headerCopy} onClick={() => { setNewChatWizard(false); setSettingsOpen(true); }}>
+            <strong>{active.title}</strong>
+            <span>{active.running ? active.status : active.repo || `${active.usedAgents.length || 1} agente${active.usedAgents.length === 1 ? "" : "s"} · ${active.provider === "copilot" ? "Copilot" : "ChatGPT"}`}</span>
+          </button>
           <div className={s.headerActions}>
-            <button className={s.iconButton} onClick={() => setSettingsOpen(true)} aria-label="Configurar chat">⚙</button>
+            <button className={s.iconButton} onClick={() => { setNewChatWizard(false); setSettingsOpen(true); }} aria-label="Configurar chat">⚙</button>
             <button className={s.iconButton} onClick={createChat} aria-label="Nuevo chat">＋</button>
           </div>
         </header>
 
         <div className={s.contextBar}>
-          <span className={s.contextChip}><strong>{modeLabel(active.mode)}</strong></span>
-          <span className={s.contextChip}>{active.provider === "chatgpt" ? "ChatGPT" : "Copilot"} · <strong>{selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</strong></span>
-          {active.reasoningEffort && <span className={s.contextChip}>esfuerzo · <strong>{active.reasoningEffort}</strong></span>}
-          {repoMode && <span className={s.contextChip}>repo · <strong>{active.repo || "sin elegir"}</strong></span>}
+          <button className={s.contextChip} onClick={() => { setNewChatWizard(false); setSettingsOpen(true); }}><strong>{modeLabel(active.mode)}</strong></button>
+          <button className={s.contextChip} onClick={() => { setNewChatWizard(false); setSettingsOpen(true); }}>{active.provider === "chatgpt" ? "ChatGPT" : "Copilot"} · <strong>{selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</strong></button>
+          {active.reasoningEffort && <button className={s.contextChip} onClick={() => { setNewChatWizard(false); setSettingsOpen(true); }}>esfuerzo · <strong>{active.reasoningEffort}</strong></button>}
+          {repoMode && <button className={s.contextChip} onClick={() => { setNewChatWizard(false); setSettingsOpen(true); }}>repo · <strong>{active.repo || "elegir"}</strong></button>}
         </div>
 
         <div className={s.messages}>
           {!active.messages.length ? (
             <div className={s.welcome}>
-              <div className={s.welcomeMark}>AI</div>
-              <h1>¿Qué querés hacer?</h1>
-              <p>Cada chat puede ser conversación pura, un borrador privado sobre un repo o una ejecución que termina en Pull Request.</p>
-              <div className={s.modeHints}><span>Solo chat</span><span>Repo · borrador</span><span>Repo + PR</span></div>
+              <div className={`${s.welcomeMark} ${active.provider === "copilot" ? s.avatarCopilot : s.avatarGpt}`}>{active.provider === "copilot" ? "GH" : "GPT"}</div>
+              <h1>Empezá una conversación</h1>
+              <p>Pedile al equipo que analice, diseñe o construya. La configuración técnica queda guardada dentro de este chat.</p>
+              <div className={s.quickPrompts}>
+                <button onClick={() => updateChat(active.id, (chat) => ({ ...chat, draft: "Revisá el proyecto y proponé las mejoras de mayor impacto." }))}>Revisar proyecto</button>
+                <button onClick={() => updateChat(active.id, (chat) => ({ ...chat, draft: "Analizá la UX actual y proponé una experiencia más simple y clara." }))}>Mejorar UX</button>
+                <button onClick={() => updateChat(active.id, (chat) => ({ ...chat, draft: "Implementá el próximo cambio prioritario, validalo y resumí el resultado." }))}>Implementar cambio</button>
+              </div>
             </div>
           ) : (
             <div className={s.stack}>
-              {active.messages.map((message) => {
+              {timeline.map((item) => {
+                if (item.type === "tools") {
+                  const owners = Array.from(new Set(item.messages.map((m) => toolOwner(m.text))));
+                  const failed = item.messages.some((m) => m.tone === "bad" || m.text.includes("falló"));
+                  const label = owners.length === 1 ? `${owners[0]} usó ${item.messages.length} herramienta${item.messages.length === 1 ? "" : "s"}` : `${owners.length} agentes usaron ${item.messages.length} herramientas`;
+                  return <details className={`${s.toolGroup} ${failed ? s.toolGroupError : ""}`} key={item.id}><summary><span>⌘</span><strong>{label}</strong><small>Ver detalle</small></summary><div>{item.messages.map((message) => <p key={message.id}>{message.text}</p>)}</div></details>;
+                }
+                const message = item.message;
                 if (message.kind === "system") return <div key={message.id} className={`${s.system} ${message.tone === "good" ? s.systemGood : message.tone === "bad" ? s.systemBad : ""}`}>{message.text}</div>;
-                if (message.kind === "user") return <div className={`${s.row} ${s.userRow}`} key={message.id}><article className={`${s.bubble} ${s.userBubble}`}><div>{message.text}</div><time>{time(message.at)}</time></article></div>;
+                if (message.kind === "user") return <div className={`${s.row} ${s.userRow}`} key={message.id}><article className={`${s.bubble} ${s.userBubble}`}><div>{message.text}</div><time>{time(message.at)} ✓✓</time></article></div>;
                 return <div className={`${s.row} ${s.agentRow}`} key={message.id}><span className={s.messageAvatar}>{(message.displayName || "A")[0].toUpperCase()}</span><article className={`${s.bubble} ${s.agentBubble}`}><div className={s.author}><strong>{message.displayName || message.agent}</strong>{message.streaming && <span className={s.typing}>escribiendo…</span>}</div><div className={s.aiResponse}><MessageResponse>{message.text}</MessageResponse></div><time>{time(message.at)}</time></article></div>;
               })}
-              {(active.prUrl || active.diffStat) && <div className={s.delivery}><strong>{active.prUrl ? "Entrega lista" : active.mode === "draft" ? "Borrador listo" : "Cambios preparados"}</strong>{active.diffStat && <pre>{active.diffStat}</pre>}{active.prUrl && <a href={active.prUrl} target="_blank" rel="noreferrer">Abrir Pull Request ↗</a>}</div>}
+              {(active.prUrl || active.diffStat) && <div className={s.delivery}><div><strong>{active.prUrl ? "Pull Request listo" : active.mode === "draft" ? "Borrador listo" : "Cambios preparados"}</strong><span>{active.prUrl ? "El equipo terminó la entrega. Revisá el diff antes de mergear." : "El trabajo quedó preparado dentro del contexto de este chat."}</span></div>{active.diffStat && <pre>{active.diffStat}</pre>}{active.prUrl && <a href={active.prUrl} target="_blank" rel="noreferrer">Abrir Pull Request ↗</a>}</div>}
               <div ref={endRef} />
             </div>
           )}
         </div>
 
         <footer className={s.composerShell}>
-          {active.running && <div className={s.running}><span className={s.spinner} /><span>{active.status}</span><button onClick={createChat}>Abrir otro chat</button></div>}
-          {active.provider === "chatgpt" && !chatGPTConnected && <div className={s.warning}>Conectá ChatGPT desde ⚙ para usar este chat, o elegí GitHub Copilot.</div>}
+          {active.running && <div className={s.running}><span className={s.spinner} /><span><strong>El equipo está trabajando</strong><small>{active.status}</small></span><button onClick={createChat}>Otro chat</button></div>}
+          {active.error && !active.running && <div className={s.errorBanner}><span>!</span><div><strong>La última ejecución se detuvo</strong><small>{active.error}</small></div></div>}
+          {active.provider === "chatgpt" && !chatGPTConnected && <div className={s.warning}>Conectá ChatGPT desde ⚙ o elegí GitHub Copilot.</div>}
           {active.provider === "copilot" && !githubConnected && <div className={s.warning}>Conectá GitHub desde ⚙ para usar Copilot.</div>}
           {repoMode && !active.repo && <div className={s.warning}>Elegí o creá un repositorio desde ⚙.</div>}
           <div className={s.composer}>
-            <button className={s.plus} onClick={() => setSettingsOpen(true)} aria-label="Configurar">＋</button>
-            <textarea value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Este chat está trabajando. Abrí otro para seguir en paralelo…" : "Escribí un objetivo…"} disabled={active.running} rows={1} />
+            <button className={s.plus} onClick={() => { setNewChatWizard(false); setSettingsOpen(true); }} aria-label="Acciones del chat">＋</button>
+            <textarea value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Este chat está trabajando…" : "Escribí un objetivo…"} disabled={active.running} rows={1} />
             <button className={s.send} onClick={() => void startRun(active.id)} disabled={!canSend} aria-label="Enviar">➤</button>
           </div>
         </footer>
 
         {settingsOpen && <>
-          <button className={s.settingsBackdrop} onClick={() => setSettingsOpen(false)} aria-label="Cerrar configuración" />
+          <button className={s.settingsBackdrop} onClick={() => { setSettingsOpen(false); setNewChatWizard(false); }} aria-label="Cerrar configuración" />
           <aside className={s.settings}>
-            <div className={s.settingsHeader}><div><strong>Configuración de este chat</strong><span>Modelo, esfuerzo, repo y forma de entrega viven dentro de cada conversación.</span></div><button className={s.iconButton} onClick={() => setSettingsOpen(false)}>×</button></div>
+            <div className={s.sheetHandle} />
+            <div className={s.settingsHeader}><div><strong>{newChatWizard ? "Nuevo chat" : "Configuración del chat"}</strong><span>{newChatWizard ? "Elegí cómo querés trabajar. Después sólo conversás." : "Proveedor, modelo, repo y entrega viven dentro de esta conversación."}</span></div><button className={s.iconButton} onClick={() => { setSettingsOpen(false); setNewChatWizard(false); }}>×</button></div>
 
             <section className={s.section}>
               <div className={s.sectionTitle}><strong>Modo de trabajo</strong></div>
               <div className={s.modeGrid}>
-                <button className={`${s.modeCard} ${active.mode === "chat" ? s.modeCardActive : ""}`} onClick={() => changeMode("chat")}><strong>Solo chat</strong><span>Conversación con el equipo. Sin repo y sin PR.</span></button>
-                <button className={`${s.modeCard} ${active.mode === "draft" ? s.modeCardActive : ""}`} onClick={() => changeMode("draft")}><strong>Repo · borrador</strong><span>Lee y modifica en Sandbox. No escribe nada en GitHub.</span></button>
-                <button className={`${s.modeCard} ${active.mode === "pr" ? s.modeCardActive : ""}`} onClick={() => changeMode("pr")}><strong>Repo + PR</strong><span>Trabaja sobre el repo y publica branch + Pull Request.</span></button>
+                <button className={`${s.modeCard} ${active.mode === "chat" ? s.modeCardActive : ""}`} onClick={() => changeMode("chat")}><span className={s.modeIcon}>💬</span><strong>Solo chat</strong><span>Conversación con el equipo. Sin repo y sin PR.</span></button>
+                <button className={`${s.modeCard} ${active.mode === "draft" ? s.modeCardActive : ""}`} onClick={() => changeMode("draft")}><span className={s.modeIcon}>📝</span><strong>Repo · borrador</strong><span>Trabaja en Sandbox y no publica en GitHub.</span></button>
+                <button className={`${s.modeCard} ${active.mode === "pr" ? s.modeCardActive : ""}`} onClick={() => changeMode("pr")}><span className={s.modeIcon}>⑂</span><strong>Repo + PR</strong><span>Implementa y publica branch + Pull Request.</span></button>
               </div>
             </section>
 
             <section className={s.section}>
-              <div className={s.sectionTitle}><strong>Modelo</strong></div>
+              <div className={s.sectionTitle}><strong>IA</strong></div>
               <div className={s.grid}>
                 <label className={s.field}>Proveedor<select value={active.provider} onChange={(e) => changeProvider(e.target.value as Provider)} disabled={active.running}><option value="chatgpt">ChatGPT / Codex</option><option value="copilot" disabled={!copilotAvailable}>GitHub Copilot{!copilotAvailable ? " · conectá GitHub" : ""}</option></select></label>
                 <label className={s.field}>Modelo<select value={active.model} onChange={(e) => changeModel(e.target.value)} disabled={!activeModels.length || active.running}>{!activeModels.length && <option value="">Sin modelos disponibles</option>}{activeModels.map((model) => <option value={model.id} key={model.id}>{model.displayName || model.name || model.id}</option>)}</select></label>
@@ -630,41 +717,30 @@ export default function Home() {
               </div>
             </section>
 
-            <section className={s.section}>
-              <div className={s.sectionTitle}><strong>ChatGPT</strong></div>
-              <div className={s.connection}>
-                <div className={s.connectionCopy}><strong>{chatGPTConnected ? "ChatGPT conectado" : chatGPT.status === "pending" ? "Esperando autorización" : "ChatGPT desconectado"}</strong><span>{chatGPTConnected ? `${chatGPT.planType || "Plan ChatGPT"}${chatGPT.email ? ` · ${chatGPT.email}` : ""}` : githubConnected ? "Opcional: podés trabajar sólo con GitHub Copilot." : "Conectá tu cuenta para usar Codex."}</span></div>
-                {chatGPTConnected ? <button className={s.smallButton} onClick={() => fetch("/api/chatgpt/logout", { method: "POST" }).then(() => { setChatGPT({ status: "disconnected" }); setChatGPTModels([]); })}>Desconectar</button> : chatGPT.status === "pending" ? <a className={s.primaryButton} href={chatGPT.verificationUrl || "https://auth.openai.com/codex/device"} target="_blank" rel="noreferrer">{chatGPT.userCode || "Abrir código"}</a> : <button className={s.primaryButton} onClick={() => void connectChatGPT()} disabled={connectingChatGPT}>{connectingChatGPT ? "Conectando…" : "Conectar"}</button>}
-              </div>
-              {connectionError && <div className={s.statusError}>{connectionError}</div>}
-            </section>
-
-            <section className={s.section}>
-              <div className={s.sectionTitle}><strong>GitHub</strong>{githubConnected && <button onClick={() => void syncRepos()}>{repoLoading ? "Sincronizando…" : "↻ Sincronizar repos"}</button>}</div>
-              <div className={s.connection}>
-                <div className={s.connectionCopy}><strong>{githubConnected ? `@${session.user?.login}` : "GitHub no conectado"}</strong><span>{githubConnected ? `${repos.length} repos cargados · Copilot disponible con la suscripción de esta cuenta` : "Conectá GitHub para usar Copilot y traer tus repos."}</span></div>
-                {githubConnected ? <><button className={s.smallButton} onClick={() => void switchGitHubAccount()}>Cambiar cuenta</button><button className={s.smallButton} onClick={() => void disconnectGitHub()}>Salir</button></> : <a className={s.primaryButton} href="/api/auth/github">Conectar GitHub</a>}
-              </div>
-              {repoError && <div className={s.statusError}>{repoError}</div>}
-            </section>
-
             {repoMode && <section className={s.section}>
               <div className={s.sectionTitle}><strong>Repositorio</strong>{githubConnected && <button onClick={() => setCreateRepoOpen((value) => !value)}>＋ Crear repo</button>}</div>
               <div className={s.repoRow}>
-                {githubConnected ? <select className={s.field} value={active.repo} onChange={(e) => changeRepo(e.target.value)} disabled={active.running || repoLoading}><option value="">Elegí un repositorio…</option>{repos.map((repo) => <option value={repo.fullName} key={repo.id}>{repo.private ? "🔒 " : ""}{repo.fullName}</option>)}</select> : <input className={s.field} value={active.repo} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, repo: e.target.value }))} placeholder="owner/repo público" />}
+                {githubConnected ? <select className={s.repoControl} value={active.repo} onChange={(e) => changeRepo(e.target.value)} disabled={active.running || repoLoading}><option value="">Elegí un repositorio…</option>{repos.map((repo) => <option value={repo.fullName} key={repo.id}>{repo.private ? "🔒 " : ""}{repo.fullName}</option>)}</select> : <input className={s.repoControl} value={active.repo} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, repo: e.target.value }))} placeholder="owner/repo público" />}
                 {githubConnected && <button className={s.smallButton} onClick={() => void syncRepos()} disabled={repoLoading}>↻</button>}
               </div>
               {active.repo && <div className={s.grid} style={{ marginTop: 9 }}><label className={s.field}>Rama base<input value={active.branch} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, branch: e.target.value }))} disabled={active.running} /></label></div>}
               {selectedRepo && <div className={s.repoMeta}><span>{selectedRepo.private ? "privado" : "público"}</span><span>{selectedRepo.canPush ? "push habilitado" : "solo lectura"}</span><span>default: {selectedRepo.defaultBranch}</span></div>}
               {active.mode === "pr" && selectedRepo && !selectedRepo.canPush && <div className={s.statusError}>Esta cuenta no tiene permiso de push sobre ese repo; elegí otro o usá Repo · borrador.</div>}
-
-              {createRepoOpen && <div className={s.createRepo}>
-                <h4>Crear repositorio en @{session.user?.login}</h4>
-                <label className={s.field}>Nombre<input value={newRepoName} onChange={(e) => setNewRepoName(e.target.value)} placeholder="mi-nuevo-proyecto" /></label>
-                <label className={s.checkbox}><input type="checkbox" checked={newRepoPrivate} onChange={(e) => setNewRepoPrivate(e.target.checked)} /> Crear como privado</label>
-                <div className={s.createRepoActions}><button className={s.smallButton} onClick={() => setCreateRepoOpen(false)}>Cancelar</button><button className={s.primaryButton} onClick={() => void createRepository()} disabled={creatingRepo || !newRepoName.trim()}>{creatingRepo ? "Creando…" : "Crear y usar"}</button></div>
-              </div>}
+              {createRepoOpen && <div className={s.createRepo}><h4>Crear repositorio en @{session.user?.login}</h4><label className={s.field}>Nombre<input value={newRepoName} onChange={(e) => setNewRepoName(e.target.value)} placeholder="mi-nuevo-proyecto" /></label><label className={s.checkbox}><input type="checkbox" checked={newRepoPrivate} onChange={(e) => setNewRepoPrivate(e.target.checked)} /> Crear como privado</label><div className={s.createRepoActions}><button className={s.smallButton} onClick={() => setCreateRepoOpen(false)}>Cancelar</button><button className={s.primaryButton} onClick={() => void createRepository()} disabled={creatingRepo || !newRepoName.trim()}>{creatingRepo ? "Creando…" : "Crear y usar"}</button></div></div>}
             </section>}
+
+            <section className={s.section}>
+              <div className={s.sectionTitle}><strong>Conexiones</strong></div>
+              <div className={s.connectionsGrid}>
+                <div className={s.connection}><span className={`${s.connectionLogo} ${s.avatarGpt}`}>GPT</span><div className={s.connectionCopy}><strong>{chatGPTConnected ? "ChatGPT conectado" : chatGPT.status === "pending" ? "Esperando autorización" : "ChatGPT"}</strong><span>{chatGPTConnected ? `${chatGPT.planType || "Plan ChatGPT"}${chatGPT.email ? ` · ${chatGPT.email}` : ""}` : "Opcional si preferís trabajar con Copilot."}</span></div>{chatGPTConnected ? <button className={s.smallButton} onClick={() => fetch("/api/chatgpt/logout", { method: "POST" }).then(() => { setChatGPT({ status: "disconnected" }); setChatGPTModels([]); })}>Salir</button> : chatGPT.status === "pending" ? <a className={s.primaryButton} href={chatGPT.verificationUrl || "https://auth.openai.com/codex/device"} target="_blank" rel="noreferrer">{chatGPT.userCode || "Autorizar"}</a> : <button className={s.primaryButton} onClick={() => void connectChatGPT()} disabled={connectingChatGPT}>{connectingChatGPT ? "…" : "Conectar"}</button>}</div>
+                <div className={s.connection}><span className={`${s.connectionLogo} ${s.avatarCopilot}`}>GH</span><div className={s.connectionCopy}><strong>{githubConnected ? `@${session.user?.login}` : "GitHub"}</strong><span>{githubConnected ? `${repos.length} repos · Copilot disponible` : "Conectá para repos y GitHub Copilot."}</span></div>{githubConnected ? <button className={s.smallButton} onClick={() => void switchGitHubAccount()}>Cambiar</button> : <a className={s.primaryButton} href="/api/auth/github">Conectar</a>}</div>
+              </div>
+              {connectionError && <div className={s.statusError}>{connectionError}</div>}
+              {repoError && <div className={s.statusError}>{repoError}</div>}
+              {githubConnected && <button className={s.disconnectLink} onClick={() => void disconnectGitHub()}>Desconectar GitHub</button>}
+            </section>
+
+            {newChatWizard && <div className={s.newWizardFooter}><div><strong>Todo listo</strong><span>Podés cambiar estos datos después desde el encabezado del chat.</span></div><button className={s.primaryButton} onClick={() => { setSettingsOpen(false); setNewChatWizard(false); }}>Empezar chat</button></div>}
           </aside>
         </>}
       </section>
