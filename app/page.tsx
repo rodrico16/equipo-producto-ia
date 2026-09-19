@@ -2,8 +2,10 @@
 
 import { KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { MessageResponse } from "@/components/ai-elements/message";
+import s from "./page.module.css";
 
-type Provider = "copilot" | "chatgpt";
+type Provider = "chatgpt" | "copilot";
+type ChatMode = "chat" | "draft" | "pr";
 
 type SessionState = {
   authenticated: boolean;
@@ -12,7 +14,6 @@ type SessionState = {
   githubConfigured?: boolean;
   user?: { login: string; avatarUrl?: string | null };
 };
-
 type ReasoningOption = { id: string; description?: string };
 type ModelOption = {
   id: string;
@@ -22,7 +23,6 @@ type ModelOption = {
   defaultReasoningEffort?: string | null;
   reasoningEfforts?: ReasoningOption[];
 };
-
 type ChatGPTState = {
   status: "disconnected" | "pending" | "connected" | "failed" | "expired";
   verificationUrl?: string | null;
@@ -31,9 +31,19 @@ type ChatGPTState = {
   email?: string | null;
   error?: string | null;
 };
-
 type AgentDefinition = { name: string; displayName: string; description: string; supervisor?: boolean };
-type StreamEvent = { type: string; agentId?: string; at?: string; data?: Record<string, unknown> };
+type GitHubRepo = {
+  id: number;
+  name: string;
+  fullName: string;
+  private: boolean;
+  defaultBranch: string;
+  htmlUrl: string;
+  owner: string;
+  ownerAvatar?: string | null;
+  canPush: boolean;
+};
+type StreamEvent = { type: string; agentId?: string; data?: Record<string, unknown> };
 type ChatMessage = {
   id: string;
   kind: "user" | "agent" | "system";
@@ -44,12 +54,12 @@ type ChatMessage = {
   streaming?: boolean;
   tone?: "neutral" | "good" | "bad";
 };
-
 type ChatThread = {
   id: string;
   title: string;
   createdAt: number;
   updatedAt: number;
+  mode: ChatMode;
   provider: Provider;
   repo: string;
   branch: string;
@@ -65,254 +75,348 @@ type ChatThread = {
   error: string;
 };
 
-const STORAGE_KEY = "epia_control_room_chats_v2";
-const ACTIVE_CHAT_KEY = "epia_control_room_active_chat_v2";
+const STORAGE_KEY = "epia_control_room_chats_v3";
+const ACTIVE_KEY = "epia_control_room_active_chat_v3";
 const COPILOT_FALLBACK: ModelOption[] = [{ id: "auto", displayName: "Auto · Copilot decide" }];
 
-function asString(value: unknown) { return typeof value === "string" ? value : ""; }
-function nowId(prefix: string) { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`; }
+function id(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+function asString(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
 function titleFromPrompt(prompt: string) {
   const clean = prompt.replace(/\s+/g, " ").trim();
   return clean.length > 42 ? `${clean.slice(0, 42)}…` : clean || "Nuevo chat";
 }
-function defaultThread(provider: Provider = "chatgpt"): ChatThread {
+function time(ts: number) {
+  return new Intl.DateTimeFormat("es-AR", { hour: "2-digit", minute: "2-digit" }).format(ts);
+}
+function defaultChat(): ChatThread {
   const now = Date.now();
   return {
-    id: nowId("chat"), title: "Nuevo chat", createdAt: now, updatedAt: now,
-    provider, repo: "rodrico16/equipo-producto-ia", branch: "main",
-    model: provider === "copilot" ? "auto" : "", reasoningEffort: "", draft: "",
-    status: "Listo para trabajar", running: false, messages: [], usedAgents: [],
-    diffStat: "", prUrl: "", error: "",
+    id: id("chat"), title: "Nuevo chat", createdAt: now, updatedAt: now,
+    mode: "chat", provider: "chatgpt", repo: "", branch: "main", model: "", reasoningEffort: "",
+    draft: "", status: "Listo para trabajar", running: false, messages: [], usedAgents: [], diffStat: "", prUrl: "", error: "",
   };
 }
-function chatPreview(chat: ChatThread) {
-  const last = [...chat.messages].reverse().find((message) => message.kind !== "system" || message.text);
+function preview(chat: ChatThread) {
   if (chat.running) return chat.status || "El equipo está trabajando…";
   if (chat.error) return chat.error;
+  const last = [...chat.messages].reverse().find((m) => m.text);
   return last?.text || "Sin mensajes todavía";
 }
-function compactTime(timestamp: number) {
-  return new Intl.DateTimeFormat("es-AR", { hour: "2-digit", minute: "2-digit" }).format(timestamp);
+function modeLabel(mode: ChatMode) {
+  if (mode === "pr") return "Repo + PR";
+  if (mode === "draft") return "Repo · borrador";
+  return "Solo chat";
 }
 
 export default function Home() {
   const [session, setSession] = useState<SessionState | null>(null);
   const [chatGPT, setChatGPT] = useState<ChatGPTState>({ status: "disconnected" });
-  const [connectingChatGPT, setConnectingChatGPT] = useState(false);
-  const [connectionError, setConnectionError] = useState("");
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
-  const [copilotModels, setCopilotModels] = useState<ModelOption[]>(COPILOT_FALLBACK);
   const [chatGPTModels, setChatGPTModels] = useState<ModelOption[]>([]);
+  const [copilotModels, setCopilotModels] = useState<ModelOption[]>(COPILOT_FALLBACK);
+  const [repos, setRepos] = useState<GitHubRepo[]>([]);
+  const [repoLoading, setRepoLoading] = useState(false);
+  const [repoError, setRepoError] = useState("");
+  const [createRepoOpen, setCreateRepoOpen] = useState(false);
+  const [newRepoName, setNewRepoName] = useState("");
+  const [newRepoPrivate, setNewRepoPrivate] = useState(true);
+  const [creatingRepo, setCreatingRepo] = useState(false);
+  const [connectionError, setConnectionError] = useState("");
+  const [connectingChatGPT, setConnectingChatGPT] = useState(false);
   const [chats, setChats] = useState<ChatThread[]>([]);
-  const [activeChatId, setActiveChatId] = useState("");
+  const [activeId, setActiveId] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [search, setSearch] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileListOpen, setMobileListOpen] = useState(false);
-  const transcriptEnd = useRef<HTMLDivElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
   const agentMaps = useRef<Record<string, Record<string, string>>>({});
-  const persistTimer = useRef<number | null>(null);
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/session", { cache: "no-store" }).then((response) => response.json()),
-      fetch("/api/agents", { cache: "no-store" }).then((response) => response.json()),
-    ]).then(([sessionData, agentsData]) => {
-      setSession(sessionData as SessionState);
-      setAgents((agentsData as { agents?: AgentDefinition[] }).agents ?? []);
-    }).catch(() => setSession({ authenticated: false }));
+      fetch("/api/session", { cache: "no-store" }).then((r) => r.json()),
+      fetch("/api/agents", { cache: "no-store" }).then((r) => r.json()),
+    ]).then(([sessionBody, agentsBody]) => {
+      setSession(sessionBody as SessionState);
+      setAgents((agentsBody as { agents?: AgentDefinition[] }).agents ?? []);
+    }).catch(() => setSession({ authenticated: true, mode: "guest", githubConnected: false }));
   }, []);
 
   useEffect(() => {
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      const saved = raw ? (JSON.parse(raw) as ChatThread[]) : [];
-      const restored = saved.filter((chat) => chat && typeof chat.id === "string").slice(0, 30).map((chat) => ({
-        ...chat,
-        running: false,
-        status: chat.running ? "Sesión recuperada · lista para continuar" : chat.status || "Listo para trabajar",
-        messages: (chat.messages ?? []).map((message) => ({ ...message, streaming: false })),
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]") as ChatThread[];
+      const restored = saved.filter((chat) => chat?.id).slice(0, 30).map((chat) => ({
+        ...defaultChat(), ...chat, running: false,
+        mode: chat.mode || (chat.repo ? "pr" : "chat"),
+        messages: (chat.messages || []).map((m) => ({ ...m, streaming: false })),
       }));
-      const next = restored.length ? restored : [defaultThread("chatgpt")];
+      const next = restored.length ? restored : [defaultChat()];
       setChats(next);
-      const requested = window.localStorage.getItem(ACTIVE_CHAT_KEY);
-      setActiveChatId(next.some((chat) => chat.id === requested) ? requested! : next[0].id);
+      const wanted = localStorage.getItem(ACTIVE_KEY);
+      setActiveId(next.some((chat) => chat.id === wanted) ? wanted! : next[0].id);
     } catch {
-      const first = defaultThread("chatgpt");
-      setChats([first]); setActiveChatId(first.id);
-    } finally { setHydrated(true); }
+      const first = defaultChat();
+      setChats([first]); setActiveId(first.id);
+    } finally {
+      setHydrated(true);
+    }
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
-    if (persistTimer.current) window.clearTimeout(persistTimer.current);
-    persistTimer.current = window.setTimeout(() => {
-      const safe = chats.slice(0, 30).map((chat) => ({
-        ...chat, running: false,
-        messages: chat.messages.slice(-140).map((message) => ({ ...message, streaming: false })),
-      }));
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(safe));
-      if (activeChatId) window.localStorage.setItem(ACTIVE_CHAT_KEY, activeChatId);
-    }, 250);
-    return () => { if (persistTimer.current) window.clearTimeout(persistTimer.current); };
-  }, [chats, activeChatId, hydrated]);
+    const safe = chats.slice(0, 30).map((chat) => ({
+      ...chat, running: false,
+      messages: chat.messages.slice(-160).map((m) => ({ ...m, streaming: false })),
+    }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(safe));
+    if (activeId) localStorage.setItem(ACTIVE_KEY, activeId);
+  }, [chats, activeId, hydrated]);
 
   useEffect(() => {
     if (!session?.authenticated) return;
-    fetch("/api/chatgpt/status", { cache: "no-store" }).then((response) => response.json())
-      .then((state) => setChatGPT(state as ChatGPTState))
-      .catch(() => setChatGPT({ status: "disconnected" }));
+    fetch("/api/chatgpt/status", { cache: "no-store" }).then((r) => r.json()).then((body) => setChatGPT(body as ChatGPTState)).catch(() => undefined);
   }, [session?.authenticated]);
 
   useEffect(() => {
     if (chatGPT.status !== "pending") return;
     const timer = window.setInterval(() => {
-      fetch("/api/chatgpt/status", { cache: "no-store" }).then((response) => response.json())
-        .then((state) => setChatGPT(state as ChatGPTState)).catch(() => undefined);
+      fetch("/api/chatgpt/status", { cache: "no-store" }).then((r) => r.json()).then((body) => setChatGPT(body as ChatGPTState)).catch(() => undefined);
     }, 2000);
-    return () => window.clearInterval(timer);
+    return () => clearInterval(timer);
   }, [chatGPT.status]);
-
-  useEffect(() => {
-    if (!session?.authenticated || !session.githubConnected) { setCopilotModels(COPILOT_FALLBACK); return; }
-    fetch("/api/models", { cache: "no-store" }).then((response) => response.json()).then((body) => {
-      const fetched = Array.isArray(body.models) ? (body.models as ModelOption[]) : [];
-      if (!fetched.some((item) => item.id === "auto")) fetched.unshift(COPILOT_FALLBACK[0]);
-      setCopilotModels(fetched.length ? fetched : COPILOT_FALLBACK);
-    }).catch(() => setCopilotModels(COPILOT_FALLBACK));
-  }, [session?.authenticated, session?.githubConnected]);
 
   useEffect(() => {
     if (chatGPT.status !== "connected") { setChatGPTModels([]); return; }
-    fetch("/api/chatgpt/models", { cache: "no-store" }).then((response) => response.json())
-      .then((body) => setChatGPTModels(Array.isArray(body.models) ? (body.models as ModelOption[]) : []))
-      .catch(() => setChatGPTModels([]));
+    fetch("/api/chatgpt/models", { cache: "no-store" }).then((r) => r.json()).then((body) => {
+      setChatGPTModels(Array.isArray(body.models) ? body.models as ModelOption[] : []);
+    }).catch(() => setChatGPTModels([]));
   }, [chatGPT.status]);
 
   useEffect(() => {
-    setChats((current) => {
-      let changed = false;
-      const next = current.map((chat) => {
-        const catalog = chat.provider === "chatgpt" ? chatGPTModels : copilotModels;
-        if (!catalog.length || catalog.some((item) => item.id === chat.model)) return chat;
-        const preferred = catalog.find((item) => item.isDefault) ?? catalog[0];
-        if (!preferred) return chat;
-        changed = true;
-        return { ...chat, model: preferred.id, reasoningEffort: chat.provider === "chatgpt" ? preferred.defaultReasoningEffort || preferred.reasoningEfforts?.[0]?.id || "" : "" };
-      });
-      return changed ? next : current;
-    });
-  }, [chatGPTModels, copilotModels]);
+    if (!session?.githubConnected) { setCopilotModels(COPILOT_FALLBACK); setRepos([]); return; }
+    void syncRepos();
+    fetch("/api/models", { cache: "no-store" }).then((r) => r.json()).then((body) => {
+      const models = Array.isArray(body.models) ? body.models as ModelOption[] : [];
+      if (!models.some((m) => m.id === "auto")) models.unshift(COPILOT_FALLBACK[0]);
+      setCopilotModels(models.length ? models : COPILOT_FALLBACK);
+    }).catch(() => setCopilotModels(COPILOT_FALLBACK));
+  }, [session?.githubConnected]);
 
-  const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) ?? chats[0], [chats, activeChatId]);
+  useEffect(() => {
+    if (!chatGPTModels.length) return;
+    setChats((current) => current.map((chat) => {
+      if (chat.provider !== "chatgpt" || chatGPTModels.some((m) => m.id === chat.model)) return chat;
+      const preferred = chatGPTModels.find((m) => m.isDefault) ?? chatGPTModels[0];
+      return { ...chat, model: preferred.id, reasoningEffort: preferred.defaultReasoningEffort || preferred.reasoningEfforts?.[0]?.id || "" };
+    }));
+  }, [chatGPTModels]);
+
+  const active = useMemo(() => chats.find((chat) => chat.id === activeId) ?? chats[0], [chats, activeId]);
   const runningCount = chats.filter((chat) => chat.running).length;
   const visibleChats = useMemo(() => {
     const needle = search.trim().toLowerCase();
     const sorted = [...chats].sort((a, b) => b.updatedAt - a.updatedAt);
-    return needle ? sorted.filter((chat) => chat.title.toLowerCase().includes(needle) || chatPreview(chat).toLowerCase().includes(needle) || chat.repo.toLowerCase().includes(needle)) : sorted;
+    return needle ? sorted.filter((chat) => `${chat.title} ${preview(chat)} ${chat.repo}`.toLowerCase().includes(needle)) : sorted;
   }, [chats, search]);
-  const activeModels = activeChat?.provider === "chatgpt" ? chatGPTModels : copilotModels;
-  const selectedModel = activeModels.find((item) => item.id === activeChat?.model);
-  const reasoningOptions = selectedModel?.reasoningEfforts ?? [];
-  const canSend = Boolean(activeChat && activeChat.draft.trim() && !activeChat.running && (activeChat.provider === "copilot" ? session?.githubConnected : chatGPT.status === "connected"));
+  const activeModels = active?.provider === "copilot" ? copilotModels : chatGPTModels;
+  const selectedModel = activeModels.find((m) => m.id === active?.model);
+  const reasoning = selectedModel?.reasoningEfforts ?? [];
+  const selectedRepo = repos.find((repo) => repo.fullName === active?.repo);
+  const canSend = Boolean(active && active.draft.trim() && !active.running && (
+    active.provider === "chatgpt" ? chatGPT.status === "connected" : session?.githubConnected
+  ) && (active.mode === "chat" || Boolean(active.repo)) && (active.mode !== "pr" || session?.githubConnected));
 
-  useEffect(() => { transcriptEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [activeChat?.messages.length, activeChat?.id]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [active?.messages.length, active?.id]);
 
-  function updateChat(id: string, updater: (chat: ChatThread) => ChatThread) {
-    setChats((current) => current.map((chat) => chat.id === id ? updater(chat) : chat));
+  function updateChat(chatId: string, fn: (chat: ChatThread) => ChatThread) {
+    setChats((current) => current.map((chat) => chat.id === chatId ? fn(chat) : chat));
   }
-  function appendMessage(chatId: string, message: ChatMessage) {
-    updateChat(chatId, (chat) => ({ ...chat, messages: [...chat.messages, message].slice(-180), updatedAt: Date.now() }));
+  function append(chatId: string, message: ChatMessage) {
+    updateChat(chatId, (chat) => ({ ...chat, messages: [...chat.messages, message].slice(-200), updatedAt: Date.now() }));
   }
-  function displayNameFor(name: string) { return agents.find((agent) => agent.name === name)?.displayName ?? name.replaceAll("_", " "); }
-  function systemMessage(chatId: string, text: string, tone: ChatMessage["tone"] = "neutral", runId?: string) {
-    appendMessage(chatId, { id: nowId(runId ? `${runId}-system` : "system"), kind: "system", text, tone, at: Date.now() });
+  function system(chatId: string, text: string, tone: ChatMessage["tone"] = "neutral", runId?: string) {
+    append(chatId, { id: id(runId ? `${runId}-sys` : "sys"), kind: "system", text, tone, at: Date.now() });
+  }
+  function displayName(name: string) {
+    return agents.find((agent) => agent.name === name)?.displayName ?? name.replaceAll("_", " ");
   }
 
-  function createChat() {
-    const provider: Provider = chatGPT.status === "connected" ? "chatgpt" : session?.githubConnected ? "copilot" : "chatgpt";
-    const chat = defaultThread(provider);
-    const catalog = provider === "chatgpt" ? chatGPTModels : copilotModels;
-    const preferred = catalog.find((item) => item.isDefault) ?? catalog[0];
-    if (preferred) { chat.model = preferred.id; chat.reasoningEffort = preferred.defaultReasoningEffort || preferred.reasoningEfforts?.[0]?.id || ""; }
-    setChats((current) => [chat, ...current]); setActiveChatId(chat.id); setSettingsOpen(false); setMobileListOpen(false);
+  async function syncRepos() {
+    setRepoLoading(true); setRepoError("");
+    try {
+      const response = await fetch("/api/github/repos", { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "No se pudieron sincronizar los repos");
+      setRepos(Array.isArray(body.repos) ? body.repos as GitHubRepo[] : []);
+    } catch (error) {
+      setRepoError(error instanceof Error ? error.message : String(error));
+    } finally { setRepoLoading(false); }
   }
-  function openChat(id: string) { setActiveChatId(id); setSettingsOpen(false); setMobileListOpen(false); }
-  function deleteChat(id: string) {
-    const target = chats.find((chat) => chat.id === id); if (target?.running) return;
-    const remaining = chats.filter((chat) => chat.id !== id);
-    if (!remaining.length) { const fresh = defaultThread(chatGPT.status === "connected" ? "chatgpt" : "copilot"); setChats([fresh]); setActiveChatId(fresh.id); return; }
-    setChats(remaining); if (activeChatId === id) setActiveChatId(remaining[0].id);
+
+  async function createRepository() {
+    if (!newRepoName.trim()) return;
+    setCreatingRepo(true); setRepoError("");
+    try {
+      const response = await fetch("/api/github/repos", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newRepoName.trim(), private: newRepoPrivate }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "No se pudo crear el repo");
+      const repo = body.repo as GitHubRepo;
+      setRepos((current) => [repo, ...current.filter((item) => item.id !== repo.id)]);
+      if (active) updateChat(active.id, (chat) => ({ ...chat, repo: repo.fullName, branch: repo.defaultBranch, updatedAt: Date.now() }));
+      setNewRepoName(""); setCreateRepoOpen(false);
+    } catch (error) {
+      setRepoError(error instanceof Error ? error.message : String(error));
+    } finally { setCreatingRepo(false); }
   }
 
   async function connectChatGPT() {
     setConnectingChatGPT(true); setConnectionError("");
     try {
-      const response = await fetch("/api/chatgpt/login", { method: "POST" }); const body = await response.json();
-      if (!response.ok) throw new Error(body.error || "No se pudo iniciar el login de ChatGPT");
+      const response = await fetch("/api/chatgpt/login", { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "No se pudo iniciar el login");
       setChatGPT(body as ChatGPTState);
-    } catch (error) { setConnectionError(error instanceof Error ? error.message : String(error)); }
-    finally { setConnectingChatGPT(false); }
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : String(error));
+    } finally { setConnectingChatGPT(false); }
   }
-  async function disconnectChatGPT() {
-    if (runningCount) return;
-    await fetch("/api/chatgpt/logout", { method: "POST" }).catch(() => undefined);
-    setChatGPT({ status: "disconnected" }); setChatGPTModels([]);
+
+  async function switchGitHubAccount() {
+    await fetch("/api/auth/logout", { method: "POST", redirect: "follow" }).catch(() => undefined);
+    window.location.href = "/api/auth/github";
+  }
+
+  async function disconnectGitHub() {
+    await fetch("/api/auth/logout", { method: "POST", redirect: "follow" }).catch(() => undefined);
+    window.location.reload();
+  }
+
+  function createChat() {
+    const chat = defaultChat();
+    if (chatGPTModels.length) {
+      const preferred = chatGPTModels.find((m) => m.isDefault) ?? chatGPTModels[0];
+      chat.model = preferred.id;
+      chat.reasoningEffort = preferred.defaultReasoningEffort || preferred.reasoningEfforts?.[0]?.id || "";
+    }
+    setChats((current) => [chat, ...current]);
+    setActiveId(chat.id); setSettingsOpen(true); setMobileListOpen(false);
+  }
+  function openChat(chatId: string) {
+    setActiveId(chatId); setMobileListOpen(false); setSettingsOpen(false);
+  }
+  function deleteChat(chatId: string) {
+    const target = chats.find((chat) => chat.id === chatId);
+    if (target?.running) return;
+    const next = chats.filter((chat) => chat.id !== chatId);
+    if (!next.length) {
+      const fresh = defaultChat(); setChats([fresh]); setActiveId(fresh.id); return;
+    }
+    setChats(next); if (activeId === chatId) setActiveId(next[0].id);
+  }
+  function changeMode(mode: ChatMode) {
+    if (!active || active.running) return;
+    updateChat(active.id, (chat) => ({
+      ...chat, mode,
+      provider: mode === "pr" ? chat.provider : "chatgpt",
+      repo: mode === "chat" ? "" : chat.repo,
+      branch: mode === "chat" ? "main" : chat.branch,
+      updatedAt: Date.now(),
+    }));
   }
   function changeProvider(provider: Provider) {
-    if (!activeChat || activeChat.running || (provider === "copilot" && !session?.githubConnected)) return;
-    const catalog = provider === "chatgpt" ? chatGPTModels : copilotModels;
-    const preferred = catalog.find((item) => item.isDefault) ?? catalog[0];
-    updateChat(activeChat.id, (chat) => ({ ...chat, provider, model: preferred?.id || (provider === "copilot" ? "auto" : ""), reasoningEffort: provider === "chatgpt" ? preferred?.defaultReasoningEffort || preferred?.reasoningEfforts?.[0]?.id || "" : "", updatedAt: Date.now() }));
+    if (!active || active.running) return;
+    if (provider === "copilot" && (active.mode !== "pr" || !session?.githubConnected)) return;
+    const catalog = provider === "copilot" ? copilotModels : chatGPTModels;
+    const preferred = catalog.find((m) => m.isDefault) ?? catalog[0];
+    updateChat(active.id, (chat) => ({
+      ...chat, provider, model: preferred?.id || (provider === "copilot" ? "auto" : ""),
+      reasoningEffort: provider === "chatgpt" ? preferred?.defaultReasoningEffort || preferred?.reasoningEfforts?.[0]?.id || "" : "",
+    }));
   }
   function changeModel(modelId: string) {
-    if (!activeChat) return; const option = activeModels.find((item) => item.id === modelId);
-    updateChat(activeChat.id, (chat) => ({ ...chat, model: modelId, reasoningEffort: chat.provider === "chatgpt" ? option?.defaultReasoningEffort || option?.reasoningEfforts?.[0]?.id || "" : "" }));
+    if (!active) return;
+    const option = activeModels.find((m) => m.id === modelId);
+    updateChat(active.id, (chat) => ({
+      ...chat, model: modelId,
+      reasoningEffort: chat.provider === "chatgpt" ? option?.defaultReasoningEffort || option?.reasoningEfforts?.[0]?.id || "" : "",
+    }));
+  }
+  function changeRepo(fullName: string) {
+    if (!active) return;
+    const repo = repos.find((item) => item.fullName === fullName);
+    updateChat(active.id, (chat) => ({ ...chat, repo: fullName, branch: repo?.defaultBranch || "main", updatedAt: Date.now() }));
   }
 
   function handleEvent(chatId: string, runId: string, provider: Provider, model: string, event: StreamEvent) {
-    const data = event.data ?? {}; const agentId = event.agentId || "supervisor";
+    const data = event.data ?? {};
+    const agentId = event.agentId || "supervisor";
     if (!agentMaps.current[chatId]) agentMaps.current[chatId] = { supervisor: "supervisor" };
     const map = agentMaps.current[chatId];
-    if (event.type === "control.status") { const message = asString(data.message); if (message) updateChat(chatId, (chat) => ({ ...chat, status: message, updatedAt: Date.now() })); return; }
-    if (event.type === "team.loaded") { systemMessage(chatId, `Equipo cargado · ${String(data.count ?? agents.length)} agentes disponibles`, "good", runId); return; }
+
+    if (event.type === "control.status") {
+      const message = asString(data.message);
+      if (message) updateChat(chatId, (chat) => ({ ...chat, status: message, updatedAt: Date.now() }));
+      return;
+    }
+    if (event.type === "team.loaded") { system(chatId, `Equipo cargado · ${String(data.count ?? agents.length)} agentes disponibles`, "good", runId); return; }
     if (event.type === "run.started") {
       updateChat(chatId, (chat) => ({ ...chat, usedAgents: chat.usedAgents.includes("supervisor") ? chat.usedAgents : [...chat.usedAgents, "supervisor"] }));
-      systemMessage(chatId, `Supervisor inició · ${provider === "chatgpt" ? "ChatGPT / Codex" : "GitHub Copilot"} · ${model || "auto"}`, "good", runId); return;
+      system(chatId, `Supervisor inició · ${provider === "chatgpt" ? "ChatGPT / Codex" : "GitHub Copilot"} · ${model || "auto"}`, "good", runId);
+      return;
     }
-    if (event.type === "subagent.selected" || event.type === "subagent.started") {
-      const name = asString(data.agentName) || agentId; if (event.agentId) map[event.agentId] = name;
+    if (event.type === "subagent.started" || event.type === "subagent.selected") {
+      const name = asString(data.agentName) || agentId;
+      if (event.agentId) map[event.agentId] = name;
       updateChat(chatId, (chat) => ({ ...chat, usedAgents: chat.usedAgents.includes(name) ? chat.usedAgents : [...chat.usedAgents, name] }));
-      if (event.type === "subagent.started") systemMessage(chatId, `${displayNameFor(name)} empezó a trabajar`, "neutral", runId); return;
+      if (event.type === "subagent.started") system(chatId, `${displayName(name)} empezó a trabajar`, "neutral", runId);
+      return;
     }
-    if (event.type === "subagent.completed") { const name = asString(data.agentName) || map[agentId] || agentId; systemMessage(chatId, `${displayNameFor(name)} terminó`, "good", runId); return; }
-    if (event.type === "subagent.failed") { const name = asString(data.agentName) || map[agentId] || agentId; systemMessage(chatId, `${displayNameFor(name)} falló${asString(data.error) ? ` · ${asString(data.error)}` : ""}`, "bad", runId); return; }
-    if (event.type === "tool.started") { const name = map[agentId] || agentId; systemMessage(chatId, `${displayNameFor(name)} usa ${asString(data.toolName) || "una herramienta"}`, "neutral", runId); return; }
-    if (event.type === "tool.completed" && data.success === false) { const name = map[agentId] || agentId; systemMessage(chatId, `Herramienta de ${displayNameFor(name)} falló`, "bad", runId); return; }
+    if (event.type === "subagent.completed") { const name = asString(data.agentName) || map[agentId] || agentId; system(chatId, `${displayName(name)} terminó`, "good", runId); return; }
+    if (event.type === "subagent.failed") { const name = asString(data.agentName) || map[agentId] || agentId; system(chatId, `${displayName(name)} falló`, "bad", runId); return; }
+    if (event.type === "tool.started") { const name = map[agentId] || agentId; system(chatId, `${displayName(name)} usa ${asString(data.toolName) || "una herramienta"}`, "neutral", runId); return; }
+    if (event.type === "tool.completed" && data.success === false) { const name = map[agentId] || agentId; system(chatId, `Herramienta de ${displayName(name)} falló`, "bad", runId); return; }
     if (event.type === "agent.delta" || event.type === "agent.message") {
-      const name = map[agentId] || agentId; const chunk = asString(data.content); if (!chunk) return;
-      const serverMessageId = asString(data.messageId) || agentId; const messageId = `${runId}:message:${serverMessageId}`;
+      const name = map[agentId] || agentId;
+      const chunk = asString(data.content); if (!chunk) return;
+      const messageId = `${runId}:${asString(data.messageId) || agentId}`;
       updateChat(chatId, (chat) => {
-        const index = chat.messages.findIndex((message) => message.id === messageId);
-        if (index === -1) {
-          const nextMessage: ChatMessage = { id: messageId, kind: "agent", text: chunk, at: Date.now(), agent: name, displayName: displayNameFor(name), streaming: event.type === "agent.delta" };
-          return { ...chat, messages: [...chat.messages, nextMessage].slice(-180), updatedAt: Date.now() };
+        const index = chat.messages.findIndex((m) => m.id === messageId);
+        if (index < 0) {
+          const next: ChatMessage = { id: messageId, kind: "agent", text: chunk, at: Date.now(), agent: name, displayName: displayName(name), streaming: event.type === "agent.delta" };
+          return { ...chat, messages: [...chat.messages, next].slice(-200), updatedAt: Date.now() };
         }
-        const messages = [...chat.messages]; const previous = messages[index];
-        messages[index] = { ...previous, agent: name, displayName: displayNameFor(name), text: event.type === "agent.message" ? chunk : previous.text + chunk, streaming: event.type === "agent.delta" };
+        const messages = [...chat.messages];
+        const previous = messages[index];
+        messages[index] = { ...previous, text: event.type === "agent.message" ? chunk : previous.text + chunk, streaming: event.type === "agent.delta", agent: name, displayName: displayName(name) };
         return { ...chat, messages, updatedAt: Date.now() };
-      }); return;
+      });
+      return;
     }
-    if (event.type === "workspace.diff") { const diffStat = asString(data.diffStat); updateChat(chatId, (chat) => ({ ...chat, diffStat, updatedAt: Date.now() })); systemMessage(chatId, diffStat ? `Cambios preparados · ${diffStat.replace(/\n/g, " · ")}` : "Cambios preparados", "good", runId); return; }
-    if (event.type === "run.completed") { systemMessage(chatId, "Supervisor cerró la ejecución", "good", runId); return; }
+    if (event.type === "workspace.diff") {
+      const diffStat = asString(data.diffStat);
+      updateChat(chatId, (chat) => ({ ...chat, diffStat, updatedAt: Date.now() }));
+      system(chatId, diffStat ? `Cambios preparados · ${diffStat.replace(/\n/g, " · ")}` : "Cambios preparados", "good", runId);
+      return;
+    }
+    if (event.type === "run.completed") { system(chatId, "Supervisor cerró la ejecución", "good", runId); return; }
     if (event.type === "control.done") {
-      const prUrl = asString(data.prUrl); const diffStat = asString(data.diffStat); const branch = asString(data.branch);
-      updateChat(chatId, (chat) => ({ ...chat, status: "Ejecución completada", running: false, prUrl: prUrl || chat.prUrl, diffStat: diffStat || chat.diffStat, branch: branch || chat.branch, error: "", updatedAt: Date.now() }));
-      systemMessage(chatId, prUrl ? "Ejecución completada · PR listo para revisar" : "Ejecución completada", "good", runId); return;
+      const prUrl = asString(data.prUrl);
+      const diffStat = asString(data.diffStat);
+      updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Ejecución completada", prUrl: prUrl || chat.prUrl, diffStat: diffStat || chat.diffStat, error: "", updatedAt: Date.now() }));
+      system(chatId, prUrl ? "Ejecución completada · PR listo para revisar" : "Ejecución completada", "good", runId);
+      return;
     }
     if (event.type === "control.error" || event.type === "run.failed") {
       const message = asString(data.message) || "La ejecución falló";
-      updateChat(chatId, (chat) => ({ ...chat, status: "Ejecución detenida", running: false, error: message, updatedAt: Date.now() })); systemMessage(chatId, message, "bad", runId);
+      updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Ejecución detenida", error: message, updatedAt: Date.now() }));
+      system(chatId, message, "bad", runId);
     }
   }
 
@@ -321,82 +425,216 @@ export default function Home() {
     if (!thread || thread.running || !thread.draft.trim()) return;
     if (thread.provider === "chatgpt" && chatGPT.status !== "connected") return;
     if (thread.provider === "copilot" && !session?.githubConnected) return;
-    const prompt = thread.draft.trim(); const runId = nowId("run"); agentMaps.current[chatId] = { supervisor: "supervisor" };
-    const priorContext = thread.messages.filter((message) => message.kind === "user" || message.kind === "agent").slice(-12).map((message) => `${message.kind === "user" ? "USUARIO" : message.displayName || "AGENTE"}: ${message.text}`).join("\n\n");
-    const requestPrompt = priorContext ? `CONTEXTO DEL CHAT:\n${priorContext}\n\nNUEVO PEDIDO DEL USUARIO:\n${prompt}` : prompt;
-    updateChat(chatId, (chat) => ({ ...chat, title: chat.title === "Nuevo chat" ? titleFromPrompt(prompt) : chat.title, draft: "", running: true, status: "Preparando ejecución…", error: "", diffStat: "", prUrl: "", updatedAt: Date.now(), messages: [...chat.messages, { id: `${runId}:user`, kind: "user", text: prompt, at: Date.now() } as ChatMessage].slice(-180) }));
+    if (thread.mode !== "chat" && !thread.repo) return;
+    if (thread.mode === "pr" && !session?.githubConnected) return;
+
+    const prompt = thread.draft.trim();
+    const runId = id("run");
+    agentMaps.current[chatId] = { supervisor: "supervisor" };
+    const context = thread.messages.filter((m) => m.kind === "user" || m.kind === "agent").slice(-12)
+      .map((m) => `${m.kind === "user" ? "USUARIO" : m.displayName || "AGENTE"}: ${m.text}`).join("\n\n");
+    const requestPrompt = context ? `CONTEXTO DEL CHAT:\n${context}\n\nNUEVO PEDIDO DEL USUARIO:\n${prompt}` : prompt;
+
+    updateChat(chatId, (chat) => ({
+      ...chat, title: chat.title === "Nuevo chat" ? titleFromPrompt(prompt) : chat.title,
+      draft: "", running: true, status: "Preparando ejecución…", error: "", diffStat: "", prUrl: "", updatedAt: Date.now(),
+      messages: [...chat.messages, { id: `${runId}:user`, kind: "user", text: prompt, at: Date.now() } as ChatMessage].slice(-200),
+    }));
+
     try {
-      const response = await fetch("/api/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chatId, repo: thread.repo, branch: thread.branch, provider: thread.provider, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt }) });
-      if (!response.ok || !response.body) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error || `HTTP ${response.status}`); }
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+      const endpoint = thread.mode === "pr" ? "/api/run" : "/api/chat-run";
+      const payload = thread.mode === "pr"
+        ? { repo: thread.repo, branch: thread.branch, provider: thread.provider, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt }
+        : { mode: thread.mode, repo: thread.repo, branch: thread.branch, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt };
+      const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!response.ok || !response.body) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${response.status}`);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
       while (true) {
-        const { value, done } = await reader.read(); buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-        const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
-        for (const valueLine of lines) { if (valueLine.trim()) handleEvent(chatId, runId, thread.provider, thread.model, JSON.parse(valueLine) as StreamEvent); }
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const raw of lines) if (raw.trim()) handleEvent(chatId, runId, thread.provider, thread.model, JSON.parse(raw) as StreamEvent);
         if (done) break;
       }
       if (buffer.trim()) handleEvent(chatId, runId, thread.provider, thread.model, JSON.parse(buffer) as StreamEvent);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Ejecución detenida", error: message, updatedAt: Date.now() })); systemMessage(chatId, message, "bad", runId);
-    } finally { updateChat(chatId, (chat) => chat.running ? { ...chat, running: false, updatedAt: Date.now() } : chat); }
+      updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Ejecución detenida", error: message, updatedAt: Date.now() }));
+      system(chatId, message, "bad", runId);
+    } finally {
+      updateChat(chatId, (chat) => chat.running ? { ...chat, running: false, updatedAt: Date.now() } : chat);
+    }
   }
 
-  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (activeChat && canSend) void startRun(activeChat.id); }
+  function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (active && canSend) void startRun(active.id);
+    }
   }
 
-  if (session === null || !hydrated) return <main className="loading-screen"><div className="brand-mark">AI</div><p>Inicializando tus chats…</p></main>;
-  if (!session.authenticated) return <main className="login-shell"><section className="login-card"><div className="eyebrow">AI PRODUCT TEAM</div><h1>Tu equipo de agentes, en conversaciones separadas.</h1><p className="lead">Entrá para ejecutar sesiones privadas con ChatGPT / Codex o GitHub Copilot.</p><a className="github-button" href="/api/auth/github">Continuar con GitHub</a></section></main>;
-  if (!activeChat) return null;
+  if (!hydrated || !session) return <main className="loading-screen"><div className="brand-mark">AI</div><p>Inicializando chats…</p></main>;
+  if (!active) return null;
+
+  const chatGPTConnected = chatGPT.status === "connected";
+  const githubConnected = Boolean(session.githubConnected);
+  const repoMode = active.mode !== "chat";
+  const copilotAvailable = active.mode === "pr" && githubConnected;
 
   return (
-    <main className={`chat-app ${mobileListOpen ? "mobile-list-open" : ""}`}>
-      <aside className="chat-sidebar">
-        <div className="chat-sidebar-top">
-          <div className="chat-profile-row"><div className="brand-mark small">AI</div><div className="chat-product-name"><strong>Product Team</strong><span>{runningCount ? `${runningCount} chat${runningCount > 1 ? "s" : ""} trabajando` : "Control Room"}</span></div><button className="icon-button new-chat-button" type="button" onClick={createChat} aria-label="Nuevo chat">＋</button></div>
-          <div className="chat-search-wrap"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar chats" /></div>
+    <main className={`${s.app} ${mobileListOpen ? s.showList : ""}`}>
+      <aside className={s.sidebar}>
+        <div className={s.sidebarTop}>
+          <div className={s.profileRow}>
+            <div className={s.brand}>AI</div>
+            <div className={s.productCopy}><strong>Product Team</strong><span>{runningCount ? `${runningCount} chat${runningCount > 1 ? "s" : ""} trabajando` : "Control Room"}</span></div>
+            <button className={s.iconButton} onClick={createChat} aria-label="Nuevo chat">＋</button>
+          </div>
+          <div className={s.search}><span>⌕</span><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar chats" /></div>
         </div>
-        <div className="thread-list">
-          {visibleChats.map((chat) => <div className={`thread-row ${chat.id === activeChat.id ? "active" : ""}`} key={chat.id}>
-            <button className="thread-main" type="button" onClick={() => openChat(chat.id)}><span className={`thread-avatar provider-${chat.provider}`}>{chat.provider === "chatgpt" ? "GPT" : "GH"}</span><span className="thread-copy"><span className="thread-line-1"><strong>{chat.title}</strong><time>{compactTime(chat.updatedAt)}</time></span><span className="thread-line-2">{chat.running && <span className="mini-spinner" />}<span className={chat.error ? "thread-error" : ""}>{chatPreview(chat)}</span></span></span></button>
-            {!chat.running && chats.length > 1 && <button className="thread-delete" type="button" onClick={() => deleteChat(chat.id)} aria-label={`Eliminar ${chat.title}`}>×</button>}
-          </div>)}
+        <div className={s.threadList}>
+          {visibleChats.map((chat) => (
+            <div className={`${s.thread} ${chat.id === active.id ? s.threadActive : ""}`} key={chat.id}>
+              <button className={s.threadMain} onClick={() => openChat(chat.id)}>
+                <span className={s.threadAvatar}>{chat.provider === "copilot" ? "GH" : "GPT"}</span>
+                <span className={s.threadBody}>
+                  <span className={s.threadTitleRow}><strong>{chat.title}</strong><time>{time(chat.updatedAt)}</time></span>
+                  <span className={s.threadPreview}>{chat.running && <span className={s.spinner} />}<span>{preview(chat)}</span></span>
+                </span>
+              </button>
+              {!chat.running && chats.length > 1 && <button className={s.threadDelete} onClick={() => deleteChat(chat.id)} aria-label="Eliminar chat">×</button>}
+            </div>
+          ))}
         </div>
-        <div className="sidebar-account"><div className="sidebar-account-row">{session.user?.avatarUrl ? <img src={session.user.avatarUrl} alt="" /> : <span className="avatar-fallback">ME</span>}<div><strong>{session.user?.login === "invitado" ? "Sesión privada" : `@${session.user?.login}`}</strong><small>{chatGPT.status === "connected" ? `ChatGPT ${chatGPT.planType || "conectado"}` : "ChatGPT desconectado"}</small></div></div><button className="sidebar-new-chat" type="button" onClick={createChat}>＋ Nuevo chat</button></div>
+        <div className={s.accountCard}>
+          <div className={s.accountLine}>
+            {session.user?.avatarUrl ? <img src={session.user.avatarUrl} alt="" /> : <span className={s.accountFallback}>ME</span>}
+            <div className={s.accountText}>
+              <strong>{githubConnected ? `@${session.user?.login}` : "GitHub sin conectar"}</strong>
+              <span>{chatGPTConnected ? `ChatGPT ${chatGPT.planType || "conectado"}` : "ChatGPT desconectado"}</span>
+            </div>
+          </div>
+          <button className={s.newChat} onClick={createChat}>＋ Nuevo chat</button>
+        </div>
       </aside>
 
-      <section className="chat-main">
-        <header className="chat-header"><button className="mobile-back" type="button" onClick={() => setMobileListOpen(true)} aria-label="Ver chats">‹</button><span className={`chat-avatar provider-${activeChat.provider}`}>{activeChat.provider === "chatgpt" ? "GPT" : "GH"}</span><div className="chat-heading-copy"><strong>{activeChat.title}</strong><span>{activeChat.running ? activeChat.status : `${activeChat.usedAgents.length || 0} agentes participaron · ${activeChat.repo}`}</span></div><div className="chat-header-actions">{runningCount > 0 && <span className="parallel-badge">{runningCount} activos</span>}<button className={`icon-button ${settingsOpen ? "active" : ""}`} type="button" onClick={() => setSettingsOpen((value) => !value)} aria-label="Configurar chat">⚙</button><button className="icon-button desktop-new" type="button" onClick={createChat} aria-label="Nuevo chat">＋</button></div></header>
+      <section className={s.main}>
+        <header className={s.header}>
+          <button className={s.mobileBack} onClick={() => setMobileListOpen(true)} aria-label="Ver chats">‹</button>
+          <span className={s.chatAvatar}>{active.provider === "copilot" ? "GH" : "GPT"}</span>
+          <div className={s.headerCopy}><strong>{active.title}</strong><span>{active.running ? active.status : `${active.usedAgents.length} agentes participaron`}</span></div>
+          <div className={s.headerActions}>
+            <button className={s.iconButton} onClick={() => setSettingsOpen(true)} aria-label="Configurar chat">⚙</button>
+            <button className={s.iconButton} onClick={createChat} aria-label="Nuevo chat">＋</button>
+          </div>
+        </header>
 
-        {settingsOpen && <div className="chat-settings-panel">
-          <div className="settings-title-row"><div><strong>Configuración de este chat</strong><small>Cada conversación conserva su propia configuración.</small></div><button className="icon-button" type="button" onClick={() => setSettingsOpen(false)}>×</button></div>
-          <div className="provider-tabs"><button type="button" className={activeChat.provider === "chatgpt" ? "active" : ""} onClick={() => changeProvider("chatgpt")} disabled={activeChat.running}>ChatGPT / Codex</button><button type="button" className={activeChat.provider === "copilot" ? "active" : ""} onClick={() => changeProvider("copilot")} disabled={activeChat.running || !session.githubConnected}>GitHub Copilot</button></div>
-          {activeChat.provider === "chatgpt" && <div className={`connection-strip status-${chatGPT.status}`}><div><strong>{chatGPT.status === "connected" ? "ChatGPT conectado" : chatGPT.status === "pending" ? "Esperando autorización" : "Conectar ChatGPT"}</strong><small>{chatGPT.status === "connected" ? `${chatGPT.planType || "Plan ChatGPT"}${chatGPT.email ? ` · ${chatGPT.email}` : ""}` : "La sesión se mantiene del lado servidor en Vercel."}</small></div>{chatGPT.status === "connected" ? <button type="button" onClick={disconnectChatGPT} disabled={Boolean(runningCount)}>Desconectar</button> : chatGPT.status === "pending" ? <div className="device-code-inline"><code>{chatGPT.userCode}</code>{chatGPT.verificationUrl && <a href={chatGPT.verificationUrl} target="_blank" rel="noreferrer">Abrir ↗</a>}</div> : <button type="button" onClick={connectChatGPT} disabled={connectingChatGPT}>{connectingChatGPT ? "Conectando…" : "Conectar"}</button>}</div>}
-          {connectionError && <div className="settings-error">{connectionError}</div>}
-          <div className="settings-grid"><label>Repositorio<input value={activeChat.repo} onChange={(event) => updateChat(activeChat.id, (chat) => ({ ...chat, repo: event.target.value }))} disabled={activeChat.running} /></label><label>Rama base<input value={activeChat.branch} onChange={(event) => updateChat(activeChat.id, (chat) => ({ ...chat, branch: event.target.value }))} disabled={activeChat.running} /></label><label>Modelo<select value={activeChat.model} onChange={(event) => changeModel(event.target.value)} disabled={activeChat.running || !activeModels.length}>{!activeModels.length && <option value="">Sin modelos disponibles</option>}{activeModels.map((item) => <option key={item.id} value={item.id}>{item.displayName || item.name || item.id}</option>)}</select></label>{activeChat.provider === "chatgpt" && reasoningOptions.length > 0 && <label>Razonamiento<select value={activeChat.reasoningEffort} onChange={(event) => updateChat(activeChat.id, (chat) => ({ ...chat, reasoningEffort: event.target.value }))} disabled={activeChat.running}>{reasoningOptions.map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label>}</div>
-          <div className="settings-policy"><span>Sandbox aislado</span><span>Chats paralelos</span><span>Sin merge automático</span></div>
-        </div>}
-
-        <div className="messages-scroll">
-          {!activeChat.messages.length ? <div className="chat-welcome"><div className="welcome-icon">AI</div><h1>Nuevo chat</h1><p>Escribí un objetivo. El supervisor va a convocar los agentes necesarios y vas a ver la conversación como un chat.</p><div className="welcome-pills"><span>{agents.length} agentes disponibles</span><span>{activeChat.provider === "chatgpt" ? "ChatGPT / Codex" : "GitHub Copilot"}</span></div></div> : <div className="message-stack">
-            {activeChat.messages.map((message) => {
-              if (message.kind === "system") return <div className={`system-bubble tone-${message.tone || "neutral"}`} key={message.id}>{message.text}</div>;
-              if (message.kind === "user") return <div className="bubble-row user-row" key={message.id}><article className="message-bubble user-bubble"><div>{message.text}</div><time>{compactTime(message.at)}</time></article></div>;
-              return <div className="bubble-row agent-row" key={message.id}><span className="message-avatar">{(message.displayName || "A").slice(0, 1).toUpperCase()}</span><article className={`message-bubble agent-bubble ${message.agent === "supervisor" ? "supervisor-bubble" : ""}`}><div className="bubble-author-row"><strong>{message.displayName || message.agent}</strong>{message.streaming && <span className="typing-label">escribiendo…</span>}</div><MessageResponse>{message.text}</MessageResponse><time>{compactTime(message.at)}</time></article></div>;
-            })}
-            {(activeChat.prUrl || activeChat.diffStat) && <div className="delivery-card"><strong>{activeChat.prUrl ? "Entrega lista" : "Cambios preparados"}</strong>{activeChat.diffStat && <pre>{activeChat.diffStat}</pre>}{activeChat.prUrl && <a href={activeChat.prUrl} target="_blank" rel="noreferrer">Abrir Pull Request ↗</a>}</div>}
-            <div ref={transcriptEnd} />
-          </div>}
+        <div className={s.contextBar}>
+          <span className={s.contextChip}><strong>{modeLabel(active.mode)}</strong></span>
+          <span className={s.contextChip}>{active.provider === "chatgpt" ? "ChatGPT" : "Copilot"} · <strong>{selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</strong></span>
+          {active.provider === "chatgpt" && active.reasoningEffort && <span className={s.contextChip}>esfuerzo · <strong>{active.reasoningEffort}</strong></span>}
+          {repoMode && <span className={s.contextChip}>repo · <strong>{active.repo || "sin elegir"}</strong></span>}
         </div>
 
-        <footer className="composer-shell">
-          {activeChat.running && <div className="running-strip"><span className="mini-spinner" /><span>{activeChat.status}</span><button type="button" onClick={createChat}>Abrir otro chat</button></div>}
-          {activeChat.provider === "chatgpt" && chatGPT.status !== "connected" && <div className="composer-warning">Conectá ChatGPT desde ⚙ para enviar mensajes en este chat.</div>}
-          {activeChat.provider === "copilot" && !session.githubConnected && <div className="composer-warning">Conectá GitHub para usar Copilot en este chat.</div>}
-          <div className="composer"><button className="composer-plus" type="button" onClick={() => setSettingsOpen(true)} aria-label="Configuración">＋</button><textarea value={activeChat.draft} onChange={(event) => updateChat(activeChat.id, (chat) => ({ ...chat, draft: event.target.value }))} onKeyDown={onComposerKeyDown} placeholder={activeChat.running ? "Este chat está trabajando. Podés abrir otro en paralelo…" : "Escribí un objetivo…"} disabled={activeChat.running} rows={1} /><button className="send-button" type="button" onClick={() => void startRun(activeChat.id)} disabled={!canSend} aria-label="Enviar">➤</button></div>
-          <div className="composer-footnote">Enter para enviar · Shift+Enter para nueva línea</div>
+        <div className={s.messages}>
+          {!active.messages.length ? (
+            <div className={s.welcome}>
+              <div className={s.welcomeMark}>AI</div>
+              <h1>¿Qué querés hacer?</h1>
+              <p>Cada chat puede ser conversación pura, un borrador privado sobre un repo o una ejecución que termina en Pull Request.</p>
+              <div className={s.modeHints}><span>Solo chat</span><span>Repo · borrador</span><span>Repo + PR</span></div>
+            </div>
+          ) : (
+            <div className={s.stack}>
+              {active.messages.map((message) => {
+                if (message.kind === "system") return <div key={message.id} className={`${s.system} ${message.tone === "good" ? s.systemGood : message.tone === "bad" ? s.systemBad : ""}`}>{message.text}</div>;
+                if (message.kind === "user") return <div className={`${s.row} ${s.userRow}`} key={message.id}><article className={`${s.bubble} ${s.userBubble}`}><div>{message.text}</div><time>{time(message.at)}</time></article></div>;
+                return <div className={`${s.row} ${s.agentRow}`} key={message.id}><span className={s.messageAvatar}>{(message.displayName || "A")[0].toUpperCase()}</span><article className={`${s.bubble} ${s.agentBubble}`}><div className={s.author}><strong>{message.displayName || message.agent}</strong>{message.streaming && <span className={s.typing}>escribiendo…</span>}</div><div className={s.aiResponse}><MessageResponse>{message.text}</MessageResponse></div><time>{time(message.at)}</time></article></div>;
+              })}
+              {(active.prUrl || active.diffStat) && <div className={s.delivery}><strong>{active.prUrl ? "Entrega lista" : active.mode === "draft" ? "Borrador listo" : "Cambios preparados"}</strong>{active.diffStat && <pre>{active.diffStat}</pre>}{active.prUrl && <a href={active.prUrl} target="_blank" rel="noreferrer">Abrir Pull Request ↗</a>}</div>}
+              <div ref={endRef} />
+            </div>
+          )}
+        </div>
+
+        <footer className={s.composerShell}>
+          {active.running && <div className={s.running}><span className={s.spinner} /><span>{active.status}</span><button onClick={createChat}>Abrir otro chat</button></div>}
+          {active.provider === "chatgpt" && !chatGPTConnected && <div className={s.warning}>Conectá ChatGPT desde ⚙ para usar este chat.</div>}
+          {active.provider === "copilot" && !githubConnected && <div className={s.warning}>Conectá GitHub desde ⚙ para usar Copilot.</div>}
+          {repoMode && !active.repo && <div className={s.warning}>Elegí o creá un repositorio desde ⚙.</div>}
+          <div className={s.composer}>
+            <button className={s.plus} onClick={() => setSettingsOpen(true)} aria-label="Configurar">＋</button>
+            <textarea value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Este chat está trabajando. Abrí otro para seguir en paralelo…" : "Escribí un objetivo…"} disabled={active.running} rows={1} />
+            <button className={s.send} onClick={() => void startRun(active.id)} disabled={!canSend} aria-label="Enviar">➤</button>
+          </div>
         </footer>
+
+        {settingsOpen && <>
+          <button className={s.settingsBackdrop} onClick={() => setSettingsOpen(false)} aria-label="Cerrar configuración" />
+          <aside className={s.settings}>
+            <div className={s.settingsHeader}><div><strong>Configuración de este chat</strong><span>Modelo, esfuerzo, repo y forma de entrega viven dentro de cada conversación.</span></div><button className={s.iconButton} onClick={() => setSettingsOpen(false)}>×</button></div>
+
+            <section className={s.section}>
+              <div className={s.sectionTitle}><strong>Modo de trabajo</strong></div>
+              <div className={s.modeGrid}>
+                <button className={`${s.modeCard} ${active.mode === "chat" ? s.modeCardActive : ""}`} onClick={() => changeMode("chat")}><strong>Solo chat</strong><span>Conversación con el equipo. Sin repo y sin PR.</span></button>
+                <button className={`${s.modeCard} ${active.mode === "draft" ? s.modeCardActive : ""}`} onClick={() => changeMode("draft")}><strong>Repo · borrador</strong><span>Lee y modifica en Sandbox. No escribe nada en GitHub.</span></button>
+                <button className={`${s.modeCard} ${active.mode === "pr" ? s.modeCardActive : ""}`} onClick={() => changeMode("pr")}><strong>Repo + PR</strong><span>Trabaja sobre el repo y publica branch + Pull Request.</span></button>
+              </div>
+            </section>
+
+            <section className={s.section}>
+              <div className={s.sectionTitle}><strong>Modelo</strong></div>
+              <div className={s.grid}>
+                <label className={s.field}>Proveedor<select value={active.provider} onChange={(e) => changeProvider(e.target.value as Provider)} disabled={active.running}><option value="chatgpt">ChatGPT / Codex</option><option value="copilot" disabled={!copilotAvailable}>GitHub Copilot{!copilotAvailable ? " · requiere Repo + PR" : ""}</option></select></label>
+                <label className={s.field}>Modelo<select value={active.model} onChange={(e) => changeModel(e.target.value)} disabled={!activeModels.length || active.running}>{!activeModels.length && <option value="">Sin modelos disponibles</option>}{activeModels.map((model) => <option value={model.id} key={model.id}>{model.displayName || model.name || model.id}</option>)}</select></label>
+                {active.provider === "chatgpt" && <label className={s.field}>Esfuerzo<select value={active.reasoningEffort} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, reasoningEffort: e.target.value }))} disabled={!reasoning.length || active.running}>{!reasoning.length && <option value={active.reasoningEffort || ""}>{active.reasoningEffort || "Predeterminado"}</option>}{reasoning.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}</select></label>}
+              </div>
+            </section>
+
+            <section className={s.section}>
+              <div className={s.sectionTitle}><strong>ChatGPT</strong></div>
+              <div className={s.connection}>
+                <div className={s.connectionCopy}><strong>{chatGPTConnected ? "ChatGPT conectado" : chatGPT.status === "pending" ? "Esperando autorización" : "ChatGPT desconectado"}</strong><span>{chatGPTConnected ? `${chatGPT.planType || "Plan ChatGPT"}${chatGPT.email ? ` · ${chatGPT.email}` : ""}` : "La sesión se mantiene en Vercel y no expone el token al navegador."}</span></div>
+                {chatGPTConnected ? <button className={s.smallButton} onClick={() => fetch("/api/chatgpt/logout", { method: "POST" }).then(() => { setChatGPT({ status: "disconnected" }); setChatGPTModels([]); })}>Desconectar</button> : chatGPT.status === "pending" ? <a className={s.primaryButton} href={chatGPT.verificationUrl || "https://auth.openai.com/codex/device"} target="_blank" rel="noreferrer">{chatGPT.userCode || "Abrir código"}</a> : <button className={s.primaryButton} onClick={() => void connectChatGPT()} disabled={connectingChatGPT}>{connectingChatGPT ? "Conectando…" : "Conectar"}</button>}
+              </div>
+              {connectionError && <div className={s.statusError}>{connectionError}</div>}
+            </section>
+
+            <section className={s.section}>
+              <div className={s.sectionTitle}><strong>GitHub</strong>{githubConnected && <button onClick={() => void syncRepos()}>{repoLoading ? "Sincronizando…" : "↻ Sincronizar repos"}</button>}</div>
+              <div className={s.connection}>
+                <div className={s.connectionCopy}><strong>{githubConnected ? `@${session.user?.login}` : "GitHub no conectado"}</strong><span>{githubConnected ? `${repos.length} repos cargados · públicos, privados y de organizaciones accesibles` : session.githubConfigured ? "Conectá cualquier cuenta GitHub para traer sus repos." : "Para usar GitHub, configurá la OAuth App en Vercel."}</span></div>
+                {githubConnected ? <><button className={s.smallButton} onClick={() => void switchGitHubAccount()}>Cambiar cuenta</button><button className={s.smallButton} onClick={() => void disconnectGitHub()}>Salir</button></> : session.githubConfigured ? <a className={s.primaryButton} href="/api/auth/github">Conectar GitHub</a> : null}
+              </div>
+              {repoError && <div className={s.statusError}>{repoError}</div>}
+            </section>
+
+            {repoMode && <section className={s.section}>
+              <div className={s.sectionTitle}><strong>Repositorio</strong>{githubConnected && <button onClick={() => setCreateRepoOpen((value) => !value)}>＋ Crear repo</button>}</div>
+              <div className={s.repoRow}>
+                {githubConnected ? <select className={s.field} value={active.repo} onChange={(e) => changeRepo(e.target.value)} disabled={active.running || repoLoading}><option value="">Elegí un repositorio…</option>{repos.map((repo) => <option value={repo.fullName} key={repo.id}>{repo.private ? "🔒 " : ""}{repo.fullName}</option>)}</select> : <input className={s.field} value={active.repo} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, repo: e.target.value }))} placeholder="owner/repo público" />}
+                {githubConnected && <button className={s.smallButton} onClick={() => void syncRepos()} disabled={repoLoading}>↻</button>}
+              </div>
+              {active.repo && <div className={s.grid} style={{ marginTop: 9 }}><label className={s.field}>Rama base<input value={active.branch} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, branch: e.target.value }))} disabled={active.running} /></label></div>}
+              {selectedRepo && <div className={s.repoMeta}><span>{selectedRepo.private ? "privado" : "público"}</span><span>{selectedRepo.canPush ? "push habilitado" : "solo lectura"}</span><span>default: {selectedRepo.defaultBranch}</span></div>}
+              {active.mode === "pr" && selectedRepo && !selectedRepo.canPush && <div className={s.statusError}>Esta cuenta no tiene permiso de push sobre ese repo; elegí otro o usá Repo · borrador.</div>}
+
+              {createRepoOpen && <div className={s.createRepo}>
+                <h4>Crear repositorio en @{session.user?.login}</h4>
+                <label className={s.field}>Nombre<input value={newRepoName} onChange={(e) => setNewRepoName(e.target.value)} placeholder="mi-nuevo-proyecto" /></label>
+                <label className={s.checkbox}><input type="checkbox" checked={newRepoPrivate} onChange={(e) => setNewRepoPrivate(e.target.checked)} /> Crear como privado</label>
+                <div className={s.createRepoActions}><button className={s.smallButton} onClick={() => setCreateRepoOpen(false)}>Cancelar</button><button className={s.primaryButton} onClick={() => void createRepository()} disabled={creatingRepo || !newRepoName.trim()}>{creatingRepo ? "Creando…" : "Crear y usar"}</button></div>
+              </div>}
+            </section>}
+          </aside>
+        </>}
       </section>
     </main>
   );
