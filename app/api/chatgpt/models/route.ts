@@ -1,8 +1,9 @@
 import { requireControlRoomIdentity } from "@/lib/server-auth";
-import { runCodexRpc } from "@/lib/chatgpt-codex";
+import { readCodexAuth } from "@/lib/chatgpt-auth-cookie";
+import { runCodexRpcWithAuth } from "@/lib/chatgpt-codex";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 90;
 
 type CodexModel = {
   id?: string;
@@ -15,8 +16,11 @@ type CodexModel = {
 
 export async function GET() {
   try {
-    const identity = await requireControlRoomIdentity();
-    const result = await runCodexRpc(identity.key, "models");
+    await requireControlRoomIdentity();
+    const authJson = await readCodexAuth();
+    if (!authJson) return Response.json({ error: "ChatGPT no está conectado", models: [] }, { status: 401 });
+
+    const result = await runCodexRpcWithAuth(authJson, "models");
     const data = Array.isArray(result.data) ? (result.data as CodexModel[]) : [];
     const models = data
       .map((item) => ({
