@@ -17,10 +17,17 @@ const client = new CopilotClient({
 try {
   await client.start();
   const models = await client.listModels();
-  process.stdout.write(JSON.stringify(models.map((model) => ({
-    id: model.id,
-    name: model.name || model.id,
-  }))));
+  process.stdout.write(JSON.stringify(models.map((model) => {
+    const supportsReasoning = Boolean(model.capabilities?.supports?.reasoningEffort);
+    return {
+      id: model.id,
+      name: model.name || model.id,
+      reasoningEfforts: supportsReasoning
+        ? ["low", "medium", "high", "xhigh"].map((id) => ({ id }))
+        : [],
+      defaultReasoningEffort: supportsReasoning ? "medium" : null,
+    };
+  })));
 } finally {
   await client.stop().catch(() => []);
 }
