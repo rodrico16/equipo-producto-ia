@@ -1,8 +1,12 @@
 import { cookies } from "next/headers";
 import { decryptSession, sessionCookie } from "@/lib/session";
 import { guestIdentityKey, guestSessionCookie } from "@/lib/guest-session";
+import { readGitHubDeviceSession } from "@/lib/github-device-auth";
 
 export async function getGitHubSession() {
+  const deviceSession = await readGitHubDeviceSession();
+  if (deviceSession) return deviceSession;
+
   const store = await cookies();
   return decryptSession(store.get(sessionCookie.name)?.value);
 }
@@ -20,7 +24,7 @@ export async function getControlRoomIdentity() {
     return { key: guestIdentityKey(guestId), mode: "guest" as const };
   }
 
-  const github = decryptSession(store.get(sessionCookie.name)?.value);
+  const github = await getGitHubSession();
   if (github) {
     return { key: `github:${github.login}`, mode: "github" as const };
   }

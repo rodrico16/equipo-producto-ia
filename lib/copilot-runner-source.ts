@@ -1,13 +1,16 @@
 export const copilotRunnerSource = String.raw`
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { CopilotClient } from "@github/copilot-sdk";
+import { BuiltInTools, CopilotClient, ToolSet } from "@github/copilot-sdk";
 
 const rawToken = process.env.COPILOT_GITHUB_TOKEN;
 const model = process.env.COPILOT_MODEL || "auto";
+const reasoningEffort = process.env.COPILOT_REASONING_EFFORT || "";
 const task = process.env.COPILOT_TASK || "";
+const runMode = process.env.COPILOT_MODE || "pr";
 const workdir = process.env.COPILOT_WORKDIR || process.cwd();
 const agentDir = process.env.COPILOT_AGENT_DIR || path.join(workdir, ".codex", "agents");
+const copilotHome = path.join("/tmp", "copilot-home-" + process.pid);
 
 if (!rawToken) throw new Error("Missing COPILOT_GITHUB_TOKEN");
 if (!task.trim()) throw new Error("Missing COPILOT_TASK");
@@ -59,29 +62,51 @@ async function loadAgents() {
   return { agents, supervisorPrompt };
 }
 
+await mkdir(copilotHome, { recursive: true });
 const { agents, supervisorPrompt } = await loadAgents();
-emit("team.loaded", { count: agents.length + 1, model });
+emit("team.loaded", { count: agents.length + 1, model, reasoningEffort, mode: runMode });
 
+// Empty mode deliberately disables ambient CLI state. Give every ephemeral
+// Vercel worker its own COPILOT_HOME so session state never leaks across runs
+// and never touches the target repository.
 const client = new CopilotClient({
-  gitHubToken: githubToken,
   useLoggedInUser: false,
   mode: "empty",
   workingDirectory: workdir,
+  baseDirectory: copilotHome,
+  sessionIdleTimeoutSeconds: 900,
   logLevel: "error",
 });
 
 try {
+  emit("runtime.stage", { stage: "client.start", message: "Iniciando runtime de Copilot…" });
   await client.start();
-  emit("copilot.connected", { model });
 
-  const session = await client.createSession({
+  // In empty mode Copilot exposes no tools unless the session opts in.
+  // Conversation-only chats get the SDK's session-isolated collaboration tools.
+  // Repository modes additionally get only the local coding tools needed to
+  // inspect, edit and verify files inside the already-isolated Vercel Sandbox.
+  const availableTools = new ToolSet().addBuiltIn(BuiltInTools.Isolated);
+  if (runMode !== "chat") {
+    availableTools.addBuiltIn(["bash", "view", "edit", "create_file", "grep", "glob"]);
+  }
+
+  const sessionConfig = {
+    gitHubToken: githubToken,
     model,
     workingDirectory: workdir,
     streaming: true,
     includeSubAgentStreamingEvents: true,
     customAgents: agents,
+    availableTools,
+    enableSessionTelemetry: false,
     onPermissionRequest: async () => ({ kind: "approve-once" }),
-  });
+  };
+  if (reasoningEffort) sessionConfig.reasoningEffort = reasoningEffort;
+
+  emit("runtime.stage", { stage: "session.create", message: "Autenticando tu cuenta de GitHub Copilot…" });
+  const session = await client.createSession(sessionConfig);
+  emit("copilot.connected", { model, reasoningEffort, mode: runMode });
 
   session.on((event) => {
     const agentId = event.agentId;
@@ -121,29 +146,54 @@ try {
     }
   });
 
+  const modeRules = runMode === "chat"
+    ? [
+        "- Estás en modo conversación: respondé el pedido sin modificar archivos del workspace.",
+        "- Podés delegar análisis a especialistas si aporta valor, pero no ejecutes cambios de código ni operaciones de entrega.",
+        "- No hagas git commit, git push ni crees Pull Requests.",
+        "- La respuesta final debe ser útil y directa, no un reporte de implementación.",
+      ]
+    : runMode === "draft"
+      ? [
+          "- Trabajá sobre el repositorio abierto y completá el cambio solicitado dentro del Sandbox.",
+          "- Delegá a especialistas cuando aporten valor y ejecutá las verificaciones/tests relevantes.",
+          "- No hagas git commit, git push ni crees Pull Requests; este modo es un borrador privado.",
+          "- Conservá cambios existentes y evitá operaciones destructivas no necesarias.",
+          "- La respuesta final debe resumir qué cambió y qué verificaste.",
+        ]
+      : [
+          "- No te quedes en un plan: implementá el cambio completo en el repositorio abierto.",
+          "- Delegá a los agentes especializados que realmente aporten valor y dejá que implementen/revisen.",
+          "- Antes de cerrar, ejecutá las verificaciones y tests relevantes disponibles en el proyecto.",
+          "- No hagas git commit, git push ni crees PR; el control room hace la publicación después.",
+          "- Conservá cambios existentes del usuario y evitá operaciones destructivas no necesarias.",
+          "- La respuesta final debe resumir qué cambió, pruebas ejecutadas, riesgos y pendientes.",
+        ];
+
   const prompt = [
-    "Actuás como Supervisor del equipo de Producto e Ingeniería definido por este repositorio.",
+    "Actuás como Supervisor del equipo de Producto e Ingeniería definido por esta aplicación.",
     supervisorPrompt,
     "",
     "OBJETIVO DEL USUARIO:",
     task,
     "",
     "REGLAS DE EJECUCIÓN:",
-    "- No te quedes en un plan: implementá el cambio completo en el repositorio abierto.",
-    "- Delegá a los agentes especializados que realmente aporten valor y dejá que implementen/revisen.",
-    "- Antes de cerrar, ejecutá las verificaciones y tests relevantes disponibles en el proyecto.",
-    "- No hagas git commit, git push ni crees PR; el control room hace la publicación después.",
+    ...modeRules,
     "- No accedas a credenciales ni intentes ampliar los permisos disponibles.",
-    "- Conservá cambios existentes del usuario y evitá operaciones destructivas no necesarias.",
-    "- La respuesta final debe resumir qué cambió, pruebas ejecutadas, riesgos y pendientes.",
   ].join("\n");
 
-  emit("run.started", { task });
+  emit("run.started", { task, mode: runMode });
+  emit("runtime.stage", { stage: "turn.send", message: "Copilot está coordinando el equipo…" });
   await session.sendAndWait({ prompt });
-  emit("run.completed", { sessionId: session.sessionId });
+  emit("run.completed", { sessionId: session.sessionId, mode: runMode });
   await session.disconnect();
 } catch (error) {
-  emit("run.failed", { message: error instanceof Error ? error.message : String(error) });
+  const message = error instanceof Error ? error.message : String(error);
+  emit("run.failed", {
+    message,
+    name: error instanceof Error ? error.name : "Error",
+    stage: "copilot-sdk",
+  });
   process.exitCode = 1;
 } finally {
   await client.stop().catch(() => []);

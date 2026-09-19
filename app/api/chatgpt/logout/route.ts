@@ -1,13 +1,21 @@
 import { requireControlRoomIdentity } from "@/lib/server-auth";
-import { logoutChatGPT } from "@/lib/chatgpt-codex";
+import {
+  clearCodexAuth,
+  clearPendingCodexSandbox,
+  readPendingCodexSandbox,
+} from "@/lib/chatgpt-auth-cookie";
+import { stopPendingChatGPTLogin } from "@/lib/chatgpt-codex";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 30;
 
 export async function POST() {
   try {
-    const identity = await requireControlRoomIdentity();
-    await logoutChatGPT(identity.key);
+    await requireControlRoomIdentity();
+    const pending = await readPendingCodexSandbox();
+    if (pending) await stopPendingChatGPTLogin(pending);
+    await clearPendingCodexSandbox();
+    await clearCodexAuth();
     return Response.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

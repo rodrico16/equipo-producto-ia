@@ -12,7 +12,8 @@ export async function GET() {
     authenticated: true,
     mode: github ? "github" : "guest",
     githubConnected: Boolean(github),
-    githubConfigured: Boolean(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET),
+    githubConfigured: true,
+    githubDeviceFlow: true,
     user: github
       ? { login: github.login, avatarUrl: github.avatarUrl ?? null }
       : { login: "invitado", avatarUrl: null },

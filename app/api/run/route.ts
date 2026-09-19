@@ -1,5 +1,6 @@
 import { Sandbox } from "@vercel/sandbox";
-import { chatGPTSandboxName } from "@/lib/chatgpt-sandbox";
+import { readCodexAuth } from "@/lib/chatgpt-auth-cookie";
+import { createChatGPTWorkerSandbox } from "@/lib/chatgpt-sandbox";
 import { copilotRunnerSource } from "@/lib/copilot-runner-source";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 
@@ -157,9 +158,8 @@ export async function POST(request: Request) {
     return Response.json({ error: "Prompt is required" }, { status: 400 });
   }
 
-  let identity;
   try {
-    identity = await requireControlRoomIdentity();
+    await requireControlRoomIdentity();
   } catch {
     return Response.json({ error: "Session required" }, { status: 401 });
   }
@@ -170,6 +170,11 @@ export async function POST(request: Request) {
       { error: "GitHub Copilot requiere conectar GitHub. Usá ChatGPT / Codex para ejecutar como invitado." },
       { status: 401 },
     );
+  }
+
+  const chatGPTAuth = provider === "chatgpt" ? await readCodexAuth() : null;
+  if (provider === "chatgpt" && !chatGPTAuth) {
+    return Response.json({ error: "Conectá ChatGPT para continuar" }, { status: 401 });
   }
 
   const stream = new ReadableStream<Uint8Array>({
@@ -208,12 +213,7 @@ export async function POST(request: Request) {
         }));
 
         if (provider === "chatgpt") {
-          sandbox = await Sandbox.fork({
-            sourceSandbox: chatGPTSandboxName(identity.key),
-            persistent: false,
-            timeout: 20 * 60 * 1000,
-            networkPolicy: "allow-all",
-          });
+          sandbox = await createChatGPTWorkerSandbox(chatGPTAuth!);
 
           const workspaceResult = await sandbox.runCommand("bash", [
             "-lc",
@@ -327,9 +327,6 @@ export async function POST(request: Request) {
             `USER OBJECTIVE:\n${prompt}`,
           ].join("\n");
 
-          // Codex normally creates its own Linux sandbox (bwrap). This run is
-          // already isolated by Vercel Sandbox, so a nested bwrap sandbox is both
-          // unnecessary and incompatible with the container capabilities.
           const args = ["--sandbox", "danger-full-access", "--ask-for-approval", "never"];
           if (model && model !== "auto") args.push("--model", model);
           if (reasoningEffort) {
