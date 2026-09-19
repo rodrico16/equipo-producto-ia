@@ -1,5 +1,5 @@
 export const asyncPrRunnerSource = String.raw`
-import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 
@@ -215,7 +215,7 @@ async function finalizeGitHub() {
         "",
         "**Solicitud:** " + task,
         "",
-        diffStat ? "**Diff:**\n```\n" + diffStat + "\n```" : "",
+        diffStat ? "**Diff:**\n~~~\n" + diffStat + "\n~~~" : "",
         "",
         "Revisar los checks y el diff antes de mergear.",
       ].join("\n"),
