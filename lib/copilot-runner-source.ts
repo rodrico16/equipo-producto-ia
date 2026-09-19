@@ -64,8 +64,10 @@ async function loadAgents() {
 const { agents, supervisorPrompt } = await loadAgents();
 emit("team.loaded", { count: agents.length + 1, model, reasoningEffort, mode: runMode });
 
+// In a multi-user web app, keep the runtime process unauthenticated and scope
+// the GitHub user token to the Copilot session itself. This is the SDK's
+// recommended pattern for user-specific quota, policy and model routing.
 const client = new CopilotClient({
-  gitHubToken: githubToken,
   useLoggedInUser: false,
   mode: "empty",
   workingDirectory: workdir,
@@ -73,10 +75,11 @@ const client = new CopilotClient({
 });
 
 try {
+  emit("runtime.stage", { stage: "client.start", message: "Iniciando runtime de Copilot…" });
   await client.start();
-  emit("copilot.connected", { model, reasoningEffort, mode: runMode });
 
   const sessionConfig = {
+    gitHubToken: githubToken,
     model,
     workingDirectory: workdir,
     streaming: true,
@@ -86,7 +89,9 @@ try {
   };
   if (reasoningEffort) sessionConfig.reasoningEffort = reasoningEffort;
 
+  emit("runtime.stage", { stage: "session.create", message: "Autenticando tu cuenta de GitHub Copilot…" });
   const session = await client.createSession(sessionConfig);
+  emit("copilot.connected", { model, reasoningEffort, mode: runMode });
 
   session.on((event) => {
     const agentId = event.agentId;
@@ -163,11 +168,17 @@ try {
   ].join("\n");
 
   emit("run.started", { task, mode: runMode });
+  emit("runtime.stage", { stage: "turn.send", message: "Copilot está coordinando el equipo…" });
   await session.sendAndWait({ prompt });
   emit("run.completed", { sessionId: session.sessionId, mode: runMode });
   await session.disconnect();
 } catch (error) {
-  emit("run.failed", { message: error instanceof Error ? error.message : String(error) });
+  const message = error instanceof Error ? error.message : String(error);
+  emit("run.failed", {
+    message,
+    name: error instanceof Error ? error.name : "Error",
+    stage: "copilot-sdk",
+  });
   process.exitCode = 1;
 } finally {
   await client.stop().catch(() => []);
