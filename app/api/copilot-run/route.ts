@@ -14,12 +14,19 @@ type RunRequest = {
   reasoningEffort?: string;
   prompt?: string;
 };
+type StreamEvent = {
+  type?: string;
+  data?: Record<string, unknown>;
+};
 
 const encoder = new TextEncoder();
 const repoPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
 function line(payload: unknown) {
   return encoder.encode(JSON.stringify(payload) + "\n");
+}
+function asString(value: unknown) {
+  return typeof value === "string" ? value : "";
 }
 
 export async function POST(request: Request) {
@@ -137,6 +144,9 @@ export async function POST(request: Request) {
         });
 
         let pending = "";
+        let runtimeFailure = "";
+        const diagnostics: string[] = [];
+
         for await (const log of command.logs()) {
           pending += log.data;
           const parts = pending.split("\n");
@@ -144,23 +154,44 @@ export async function POST(request: Request) {
           for (const part of parts) {
             if (!part.trim()) continue;
             try {
-              controller.enqueue(line(JSON.parse(part)));
+              const event = JSON.parse(part) as StreamEvent;
+              if (event.type === "run.failed") {
+                runtimeFailure = asString(event.data?.message) || runtimeFailure;
+              }
+              if (event.type === "runtime.stage") {
+                const message = asString(event.data?.message);
+                if (message) controller.enqueue(line({ type: "control.status", data: { message } }));
+              } else {
+                controller.enqueue(line(event));
+              }
             } catch {
+              diagnostics.push(part.trim());
               controller.enqueue(line({ type: "runtime.log", data: { message: part } }));
             }
           }
         }
         if (pending.trim()) {
           try {
-            controller.enqueue(line(JSON.parse(pending)));
+            const event = JSON.parse(pending) as StreamEvent;
+            if (event.type === "run.failed") {
+              runtimeFailure = asString(event.data?.message) || runtimeFailure;
+            }
+            if (event.type === "runtime.stage") {
+              const message = asString(event.data?.message);
+              if (message) controller.enqueue(line({ type: "control.status", data: { message } }));
+            } else {
+              controller.enqueue(line(event));
+            }
           } catch {
+            diagnostics.push(pending.trim());
             controller.enqueue(line({ type: "runtime.log", data: { message: pending } }));
           }
         }
 
         const finished = await command.wait();
         if (finished.exitCode !== 0) {
-          throw new Error(`Copilot runtime exited with code ${finished.exitCode}`);
+          const detail = runtimeFailure || diagnostics.slice(-5).join(" | ").slice(-1600);
+          throw new Error(detail || `Copilot runtime exited with code ${finished.exitCode}`);
         }
 
         if (mode === "draft") {
