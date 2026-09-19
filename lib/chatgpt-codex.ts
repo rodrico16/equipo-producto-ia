@@ -98,7 +98,7 @@ export async function startChatGPTDeviceLogin() {
       const state = await readStateFromSandbox(sandbox);
       if (state.status !== "disconnected") {
         keepAlive = state.status === "pending";
-        return { state, sandboxId: sandbox.sandboxId };
+        return { state, sandboxId: sandbox.name };
       }
     }
     throw new Error("Codex did not return a device code in time");
@@ -108,7 +108,7 @@ export async function startChatGPTDeviceLogin() {
 }
 
 export async function readPendingChatGPTLogin(sandboxId: string) {
-  const sandbox = await Sandbox.get({ sandboxId });
+  const sandbox = await Sandbox.get({ name: sandboxId });
   let state = await readStateFromSandbox(sandbox);
   let account: Record<string, unknown> | null = null;
 
@@ -146,7 +146,7 @@ export async function readPendingChatGPTLogin(sandboxId: string) {
 
 export async function stopPendingChatGPTLogin(sandboxId: string) {
   try {
-    const sandbox = await Sandbox.get({ sandboxId });
+    const sandbox = await Sandbox.get({ name: sandboxId });
     await sandbox.stop().catch(() => undefined);
   } catch {}
 }
