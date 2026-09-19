@@ -1,16 +1,21 @@
 export const copilotModelsRunnerSource = String.raw`
+import { mkdir } from "node:fs/promises";
 import { CopilotClient } from "@github/copilot-sdk";
 
 const rawToken = process.env.COPILOT_GITHUB_TOKEN;
 if (!rawToken) throw new Error("Missing COPILOT_GITHUB_TOKEN");
 
 const githubToken = rawToken;
+const copilotHome = "/tmp/copilot-models-" + process.pid;
 delete process.env.COPILOT_GITHUB_TOKEN;
+await mkdir(copilotHome, { recursive: true });
 
 const client = new CopilotClient({
   gitHubToken: githubToken,
   useLoggedInUser: false,
   mode: "empty",
+  baseDirectory: copilotHome,
+  sessionIdleTimeoutSeconds: 300,
   logLevel: "error",
 });
 
