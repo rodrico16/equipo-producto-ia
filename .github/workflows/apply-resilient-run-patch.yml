@@ -1,0 +1,162 @@
+name: Apply resilient long-run patch
+
+on:
+  push:
+    branches:
+      - fix/resilient-long-runs
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/resilient-long-runs
+          fetch-depth: 0
+
+      - name: Patch long-running stream resilience
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_enqueue_calls(source: str) -> tuple[str, int]:
+              target = "controller.enqueue(line("
+              out = []
+              cursor = 0
+              count = 0
+              while True:
+                  idx = source.find(target, cursor)
+                  if idx < 0:
+                      out.append(source[cursor:])
+                      break
+                  out.append(source[cursor:idx])
+                  start = idx + len(target)
+                  i = start
+                  depth = 1
+                  quote = None
+                  escaped = False
+                  line_comment = False
+                  block_comment = False
+                  while i < len(source):
+                      ch = source[i]
+                      nxt = source[i + 1] if i + 1 < len(source) else ""
+                      if line_comment:
+                          if ch == "\n": line_comment = False
+                          i += 1
+                          continue
+                      if block_comment:
+                          if ch == "*" and nxt == "/":
+                              block_comment = False
+                              i += 2
+                              continue
+                          i += 1
+                          continue
+                      if quote:
+                          if escaped:
+                              escaped = False
+                          elif ch == "\\":
+                              escaped = True
+                          elif ch == quote:
+                              quote = None
+                          i += 1
+                          continue
+                      if ch in ("'", '"', '`'):
+                          quote = ch
+                          i += 1
+                          continue
+                      if ch == "/" and nxt == "/":
+                          line_comment = True
+                          i += 2
+                          continue
+                      if ch == "/" and nxt == "*":
+                          block_comment = True
+                          i += 2
+                          continue
+                      if ch == "(":
+                          depth += 1
+                      elif ch == ")":
+                          depth -= 1
+                          if depth == 0:
+                              break
+                      i += 1
+                  if depth != 0 or source[i + 1:i + 3] != ");":
+                      raise RuntimeError(f"Could not parse enqueue call near offset {idx}")
+                  inner = source[start:i]
+                  out.append(f"safeEnqueue(controller, {inner});")
+                  cursor = i + 3
+                  count += 1
+              return "".join(out), count
+
+          route_path = Path("app/api/run/route.ts")
+          route = route_path.read_text()
+          line_fn = '''function line(payload: unknown) {\n  return encoder.encode(JSON.stringify(payload) + "\\n");\n}\n'''
+          if "function safeEnqueue(" not in route:
+              if line_fn not in route:
+                  raise RuntimeError("line() anchor not found")
+              route = route.replace(line_fn, line_fn + '''\nfunction safeEnqueue(\n  controller: ReadableStreamDefaultController<Uint8Array>,\n  payload: unknown,\n) {\n  try {\n    controller.enqueue(line(payload));\n    return true;\n  } catch {\n    // A mobile browser can drop the HTTP reader while the server-side job is\n    // still healthy. Never let a dead client abort Codex/Copilot or delivery.\n    return false;\n  }\n}\n''', 1)
+
+          route, replaced = replace_enqueue_calls(route)
+          if replaced < 10:
+              raise RuntimeError(f"Expected many enqueue calls, replaced only {replaced}")
+          if "controller.enqueue(line(" in route:
+              raise RuntimeError("Unsafe enqueue calls remain")
+
+          anchor = '''    async start(controller) {\n      let sandbox: Sandbox | undefined;\n      try {\n'''
+          replacement = '''    async start(controller) {\n      let sandbox: Sandbox | undefined;\n      let heartbeat: ReturnType<typeof setInterval> | undefined;\n      try {\n        heartbeat = setInterval(() => {\n          safeEnqueue(controller, { type: "control.heartbeat", data: { at: Date.now() } });\n        }, 12_000);\n'''
+          if anchor not in route:
+              raise RuntimeError("stream start anchor not found")
+          route = route.replace(anchor, replacement, 1)
+
+          final_anchor = '''      } finally {\n        if (sandbox) await sandbox.stop().catch(() => undefined);\n        controller.close();\n      }\n'''
+          final_replacement = '''      } finally {\n        if (heartbeat) clearInterval(heartbeat);\n        if (sandbox) await sandbox.stop().catch(() => undefined);\n        try { controller.close(); } catch { /* client already disconnected */ }\n      }\n'''
+          if final_anchor not in route:
+              raise RuntimeError("stream finally anchor not found")
+          route = route.replace(final_anchor, final_replacement, 1)
+          route_path.write_text(route)
+
+          page_path = Path("app/page.tsx")
+          page = page_path.read_text()
+
+          start_anchor = '''  async function startRun(chatId: string) {\n'''
+          helpers = '''  function isNetworkStreamError(error: unknown) {\n    const message = error instanceof Error ? error.message : String(error);\n    return error instanceof TypeError || /load failed|failed to fetch|networkerror|network connection was lost|stream ended before completion/i.test(message);\n  }\n\n  async function recoverPrRun(chatId: string, runId: string, repo: string, branch: string) {\n    updateChat(chatId, (chat) => ({\n      ...chat,\n      running: true,\n      status: "Conexión interrumpida · recuperando ejecución…",\n      error: "",\n      updatedAt: Date.now(),\n    }));\n    system(chatId, "Se cortó la conexión del iPhone. La ejecución sigue del lado del servidor; estoy recuperando el resultado…", "neutral", runId);\n\n    for (let attempt = 0; attempt < 55; attempt += 1) {\n      await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 1_500 : 5_000));\n      try {\n        const query = new URLSearchParams({ repo, branch });\n        const response = await fetch(`/api/run-status?${query.toString()}`, { cache: "no-store" });\n        if (!response.ok) continue;\n        const body = await response.json() as { state?: string; prUrl?: string };\n        if (body.state === "completed" && body.prUrl) {\n          updateChat(chatId, (chat) => ({\n            ...chat,\n            running: false,\n            status: "Ejecución recuperada",\n            prUrl: body.prUrl || chat.prUrl,\n            error: "",\n            updatedAt: Date.now(),\n          }));\n          system(chatId, "Conexión recuperada · el PR quedó listo para revisar", "good", runId);\n          return true;\n        }\n      } catch {\n        // iOS can briefly suspend networking; keep polling until the run window closes.\n      }\n    }\n    return false;\n  }\n\n'''
+          if helpers.strip() not in page:
+              if start_anchor not in page:
+                  raise RuntimeError("startRun anchor not found")
+              page = page.replace(start_anchor, helpers + start_anchor, 1)
+
+          run_id_anchor = '''    const runId = id("run");\n    agentMaps.current[chatId] = { supervisor: "supervisor" };\n'''
+          run_id_replacement = '''    const runId = id("run");\n    let remoteBranch = "";\n    let terminalEventSeen = false;\n    agentMaps.current[chatId] = { supervisor: "supervisor" };\n'''
+          if run_id_anchor not in page:
+              raise RuntimeError("run id anchor not found")
+          page = page.replace(run_id_anchor, run_id_replacement, 1)
+
+          reader_anchor = '''      const reader = response.body.getReader();\n      const decoder = new TextDecoder();\n      let buffer = "";\n'''
+          reader_replacement = '''      const reader = response.body.getReader();\n      const decoder = new TextDecoder();\n      let buffer = "";\n      const consumeEvent = (event: StreamEvent) => {\n        const eventBranch = asString(event.data?.branch);\n        if (eventBranch) remoteBranch = eventBranch;\n        if (event.type === "control.done" || event.type === "control.error" || event.type === "run.failed") terminalEventSeen = true;\n        handleEvent(chatId, runId, thread.provider, thread.model, event);\n      };\n'''
+          if reader_anchor not in page:
+              raise RuntimeError("reader anchor not found")
+          page = page.replace(reader_anchor, reader_replacement, 1)
+
+          old_loop = '''        for (const raw of lines) if (raw.trim()) handleEvent(chatId, runId, thread.provider, thread.model, JSON.parse(raw) as StreamEvent);\n        if (done) break;\n      }\n      if (buffer.trim()) handleEvent(chatId, runId, thread.provider, thread.model, JSON.parse(buffer) as StreamEvent);\n    } catch (error) {\n      const message = error instanceof Error ? error.message : String(error);\n      updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Ejecución detenida", error: message, updatedAt: Date.now() }));\n      system(chatId, message, "bad", runId);\n'''
+          new_loop = '''        for (const raw of lines) if (raw.trim()) consumeEvent(JSON.parse(raw) as StreamEvent);\n        if (done) break;\n      }\n      if (buffer.trim()) consumeEvent(JSON.parse(buffer) as StreamEvent);\n      if (!terminalEventSeen) throw new TypeError("Stream ended before completion");\n    } catch (error) {\n      const message = error instanceof Error ? error.message : String(error);\n      const recoverable = thread.mode === "pr" && Boolean(remoteBranch) && Boolean(session?.githubConnected) && isNetworkStreamError(error);\n      if (recoverable) {\n        const recovered = await recoverPrRun(chatId, runId, thread.repo, remoteBranch);\n        if (recovered) return;\n        const recoveryMessage = "La conexión se interrumpió y no apareció un PR dentro de la ventana de recuperación. Podés reintentar el pedido; no marco ningún cambio como entregado.";\n        updateChat(chatId, (chat) => ({ ...chat, running: false, status: "No se pudo recuperar la ejecución", error: recoveryMessage, updatedAt: Date.now() }));\n        system(chatId, recoveryMessage, "bad", runId);\n      } else {\n        updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Ejecución detenida", error: message, updatedAt: Date.now() }));\n        system(chatId, message, "bad", runId);\n      }\n'''
+          if old_loop not in page:
+              raise RuntimeError("stream loop anchor not found")
+          page = page.replace(old_loop, new_loop, 1)
+          page_path.write_text(page)
+          PY
+
+      - name: Remove one-shot patch workflow
+        run: rm .github/workflows/apply-resilient-run-patch.yml
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/api/run/route.ts app/page.tsx app/api/run-status/route.ts .github/workflows/apply-resilient-run-patch.yml
+          git commit -m "fix: harden long-running mobile streams"
+          git push origin HEAD:fix/resilient-long-runs
