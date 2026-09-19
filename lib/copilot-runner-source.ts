@@ -11,6 +11,10 @@ const runMode = process.env.COPILOT_MODE || "pr";
 const workdir = process.env.COPILOT_WORKDIR || process.cwd();
 const agentDir = process.env.COPILOT_AGENT_DIR || path.join(workdir, ".codex", "agents");
 const copilotHome = path.join("/tmp", "copilot-home-" + process.pid);
+const requestedTurnTimeout = Number(process.env.COPILOT_TURN_TIMEOUT_MS || "240000");
+const turnTimeoutMs = Number.isFinite(requestedTurnTimeout)
+  ? Math.max(30_000, Math.min(900_000, requestedTurnTimeout))
+  : 240_000;
 
 if (!rawToken) throw new Error("Missing COPILOT_GITHUB_TOKEN");
 if (!task.trim()) throw new Error("Missing COPILOT_TASK");
@@ -183,8 +187,12 @@ try {
   ].join("\n");
 
   emit("run.started", { task, mode: runMode });
-  emit("runtime.stage", { stage: "turn.send", message: "Copilot está coordinando el equipo…" });
-  await session.sendAndWait({ prompt });
+  emit("runtime.stage", {
+    stage: "turn.send",
+    message: "Copilot está coordinando el equipo…",
+    timeoutMs: turnTimeoutMs,
+  });
+  await session.sendAndWait({ prompt }, turnTimeoutMs);
   emit("run.completed", { sessionId: session.sessionId, mode: runMode });
   await session.disconnect();
 } catch (error) {
