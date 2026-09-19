@@ -180,7 +180,16 @@ export async function POST(request: Request) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let sandbox: Sandbox | undefined;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
       try {
+        heartbeat = setInterval(() => {
+          try {
+            controller.enqueue(line({ type: "heartbeat", data: { at: Date.now() } }));
+          } catch {
+            // The client may have disconnected; cleanup in finally will stop the timer.
+          }
+        }, 10_000);
+
         controller.enqueue(line({ type: "control.status", data: { message: "Validando repositorio…" } }));
 
         const repoResponse = await fetch(`https://api.github.com/repos/${repo}`, {
@@ -542,6 +551,7 @@ export async function POST(request: Request) {
           data: { message: error instanceof Error ? error.message : String(error) },
         }));
       } finally {
+        if (heartbeat) clearInterval(heartbeat);
         if (sandbox) await sandbox.stop().catch(() => undefined);
         controller.close();
       }
