@@ -45,11 +45,14 @@ async function ensureCodex(sandbox: Sandbox) {
 
 async function restoreAuth(sandbox: Sandbox, authJson?: string | null) {
   if (!authJson) return;
-  await sandbox.runCommand("bash", ["-lc", 'mkdir -p "$HOME/.codex" && chmod 700 "$HOME/.codex"']);
   await sandbox.writeFiles([
-    { path: "/home/vercel-sandbox/.codex/auth.json", content: Buffer.from(authJson, "utf8") },
+    { path: "/tmp/control-room-codex-auth.json", content: Buffer.from(authJson, "utf8") },
   ]);
-  await sandbox.runCommand("bash", ["-lc", 'chmod 600 "$HOME/.codex/auth.json"']);
+  const restore = await sandbox.runCommand("bash", [
+    "-lc",
+    'set -e; mkdir -p "$HOME/.codex"; chmod 700 "$HOME/.codex"; cp /tmp/control-room-codex-auth.json "$HOME/.codex/auth.json"; chmod 600 "$HOME/.codex/auth.json"; rm -f /tmp/control-room-codex-auth.json',
+  ]);
+  if (restore.exitCode !== 0) throw new Error("Could not restore ChatGPT credentials into the worker sandbox");
 }
 
 export async function createChatGPTAuthSandbox() {
