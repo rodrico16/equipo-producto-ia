@@ -1,5 +1,6 @@
-import { Sandbox } from "@vercel/sandbox";
-import { chatGPTSandboxName } from "@/lib/chatgpt-sandbox";
+import type { Sandbox } from "@vercel/sandbox";
+import { readCodexAuth } from "@/lib/chatgpt-auth-cookie";
+import { createChatGPTWorkerSandbox } from "@/lib/chatgpt-sandbox";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 
 export const runtime = "nodejs";
@@ -107,12 +108,14 @@ export async function POST(request: Request) {
   if (!prompt) return Response.json({ error: "Prompt is required" }, { status: 400 });
   if (mode === "draft" && !repoPattern.test(repo)) return Response.json({ error: "Choose a repository first" }, { status: 400 });
 
-  let identity;
   try {
-    identity = await requireControlRoomIdentity();
+    await requireControlRoomIdentity();
   } catch {
     return Response.json({ error: "Session required" }, { status: 401 });
   }
+
+  const authJson = await readCodexAuth();
+  if (!authJson) return Response.json({ error: "Conectá ChatGPT para continuar" }, { status: 401 });
   const github = await getGitHubSession();
 
   const stream = new ReadableStream<Uint8Array>({
@@ -120,12 +123,7 @@ export async function POST(request: Request) {
       let sandbox: Sandbox | undefined;
       try {
         controller.enqueue(line({ type: "control.status", data: { message: mode === "chat" ? "Abriendo una sesión de chat…" : "Preparando el repositorio…" } }));
-        sandbox = await Sandbox.fork({
-          sourceSandbox: chatGPTSandboxName(identity.key),
-          persistent: false,
-          timeout: 20 * 60 * 1000,
-          networkPolicy: "allow-all",
-        });
+        sandbox = await createChatGPTWorkerSandbox(authJson);
 
         const workspaceResult = await sandbox.runCommand("bash", ["-lc", "mkdir -p /tmp/control-room-work && mktemp -d /tmp/control-room-work/run-XXXXXX"]);
         if (workspaceResult.exitCode !== 0) throw new Error("Could not create workspace");
