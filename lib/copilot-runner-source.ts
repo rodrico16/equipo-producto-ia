@@ -1,7 +1,7 @@
 export const copilotRunnerSource = String.raw`
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { CopilotClient } from "@github/copilot-sdk";
+import { BuiltInTools, CopilotClient, ToolSet } from "@github/copilot-sdk";
 
 const rawToken = process.env.COPILOT_GITHUB_TOKEN;
 const model = process.env.COPILOT_MODEL || "auto";
@@ -82,6 +82,15 @@ try {
   emit("runtime.stage", { stage: "client.start", message: "Iniciando runtime de Copilot…" });
   await client.start();
 
+  // In empty mode Copilot exposes no tools unless the session opts in.
+  // Conversation-only chats get the SDK's session-isolated collaboration tools.
+  // Repository modes additionally get only the local coding tools needed to
+  // inspect, edit and verify files inside the already-isolated Vercel Sandbox.
+  const availableTools = new ToolSet().addBuiltIn(BuiltInTools.Isolated);
+  if (runMode !== "chat") {
+    availableTools.addBuiltIn(["bash", "view", "edit", "create_file", "grep", "glob"]);
+  }
+
   const sessionConfig = {
     gitHubToken: githubToken,
     model,
@@ -89,6 +98,8 @@ try {
     streaming: true,
     includeSubAgentStreamingEvents: true,
     customAgents: agents,
+    availableTools,
+    enableSessionTelemetry: false,
     onPermissionRequest: async () => ({ kind: "approve-once" }),
   };
   if (reasoningEffort) sessionConfig.reasoningEffort = reasoningEffort;
