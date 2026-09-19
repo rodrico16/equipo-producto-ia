@@ -1,6 +1,10 @@
-import type { Sandbox } from "@vercel/sandbox";
+import { Sandbox } from "@vercel/sandbox";
 import { codexRpcSource } from "@/lib/codex-rpc-source";
-import { getChatGPTSandbox } from "@/lib/chatgpt-sandbox";
+import {
+  createChatGPTAuthSandbox,
+  createChatGPTWorkerSandbox,
+  readCodexAuthFile,
+} from "@/lib/chatgpt-sandbox";
 
 const rpcPath = "/tmp/control-room-codex-rpc.mjs";
 
@@ -20,10 +24,8 @@ export type ChatGPTLoginState = {
   updatedAt?: string;
 };
 
-async function prepare(login: string) {
-  const sandbox = await getChatGPTSandbox(login);
+async function writeRpc(sandbox: Sandbox) {
   await sandbox.writeFiles([{ path: rpcPath, content: Buffer.from(codexRpcSource) }]);
-  return sandbox;
 }
 
 function parseRpcOutput(output: string): RpcEnvelope {
@@ -36,33 +38,32 @@ function parseRpcOutput(output: string): RpcEnvelope {
   throw new Error("Codex app-server returned no structured response");
 }
 
-export async function runCodexRpc(
-  login: string,
-  mode: "account-read" | "models",
-  options: { keepSandboxAlive?: boolean } = {},
-) {
-  const sandbox = await prepare(login);
+async function runRpcInSandbox(sandbox: Sandbox, mode: "account-read" | "models") {
+  await writeRpc(sandbox);
+  const command = await sandbox.runCommand({
+    cmd: "node",
+    args: [rpcPath],
+    env: { CODEX_RPC_MODE: mode },
+  });
+  const stdout = await command.stdout();
+  if (command.exitCode !== 0) {
+    const stderr = await command.stderr();
+    throw new Error(stderr.trim() || `Codex ${mode} failed`);
+  }
+  const payload = parseRpcOutput(stdout);
+  if (!payload.ok) {
+    const message = typeof payload.error === "string" ? payload.error : payload.error?.message;
+    throw new Error(message || `Codex ${mode} failed`);
+  }
+  return payload.result ?? {};
+}
+
+export async function runCodexRpcWithAuth(authJson: string, mode: "account-read" | "models") {
+  const sandbox = await createChatGPTWorkerSandbox(authJson, 90_000);
   try {
-    const command = await sandbox.runCommand({
-      cmd: "node",
-      args: [rpcPath],
-      env: { CODEX_RPC_MODE: mode },
-    });
-    const stdout = await command.stdout();
-    if (command.exitCode !== 0) {
-      const stderr = await command.stderr();
-      throw new Error(stderr.trim() || `Codex ${mode} failed`);
-    }
-    const payload = parseRpcOutput(stdout);
-    if (!payload.ok) {
-      const message = typeof payload.error === "string" ? payload.error : payload.error?.message;
-      throw new Error(message || `Codex ${mode} failed`);
-    }
-    return payload.result ?? {};
+    return await runRpcInSandbox(sandbox, mode);
   } finally {
-    if (!options.keepSandboxAlive) {
-      await sandbox.stop().catch(() => undefined);
-    }
+    await sandbox.stop().catch(() => undefined);
   }
 }
 
@@ -79,28 +80,12 @@ async function readStateFromSandbox(sandbox: Sandbox): Promise<ChatGPTLoginState
   }
 }
 
-export async function readChatGPTLoginState(login: string) {
-  const sandbox = await prepare(login);
-  const state = await readStateFromSandbox(sandbox);
-
-  // While device auth is pending, the app-server process must stay alive in the
-  // named sandbox so OpenAI can deliver account/login/completed asynchronously.
-  if (state.status !== "pending") {
-    await sandbox.stop().catch(() => undefined);
-  }
-  return state;
-}
-
-export async function stopChatGPTSandbox(login: string) {
-  const sandbox = await prepare(login);
-  await sandbox.stop().catch(() => undefined);
-}
-
-export async function startChatGPTDeviceLogin(login: string) {
-  const sandbox = await prepare(login);
+export async function startChatGPTDeviceLogin() {
+  const sandbox = await createChatGPTAuthSandbox();
   let keepAlive = false;
   try {
-    await sandbox.runCommand("bash", ["-lc", 'rm -f "$HOME/.codex/control-room-login.json"']);
+    await writeRpc(sandbox);
+    await sandbox.runCommand("bash", ["-lc", 'rm -f "$HOME/.codex/control-room-login.json" "$HOME/.codex/auth.json"']);
     await sandbox.runCommand({
       cmd: "node",
       args: [rpcPath],
@@ -108,12 +93,12 @@ export async function startChatGPTDeviceLogin(login: string) {
       env: { CODEX_RPC_MODE: "login-start" },
     });
 
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 24; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       const state = await readStateFromSandbox(sandbox);
       if (state.status !== "disconnected") {
         keepAlive = state.status === "pending";
-        return state;
+        return { state, sandboxId: sandbox.sandboxId };
       }
     }
     throw new Error("Codex did not return a device code in time");
@@ -122,14 +107,46 @@ export async function startChatGPTDeviceLogin(login: string) {
   }
 }
 
-export async function logoutChatGPT(login: string) {
-  const sandbox = await prepare(login);
-  try {
-    await sandbox.runCommand("bash", [
-      "-lc",
-      'export PATH="$HOME/.local/bin:$PATH"; codex logout >/dev/null 2>&1 || true; rm -f "$HOME/.codex/control-room-login.json"',
-    ]);
-  } finally {
-    await sandbox.stop().catch(() => undefined);
+export async function readPendingChatGPTLogin(sandboxId: string) {
+  const sandbox = await Sandbox.get({ sandboxId });
+  let state = await readStateFromSandbox(sandbox);
+  let account: Record<string, unknown> | null = null;
+
+  if (state.status === "pending") {
+    try {
+      const result = await runRpcInSandbox(sandbox, "account-read");
+      const value = result.account;
+      if (value && typeof value === "object") {
+        account = value as Record<string, unknown>;
+        state = {
+          ...state,
+          status: "connected",
+          planType: typeof account.planType === "string" ? account.planType : state.planType,
+        };
+      }
+    } catch {
+      // Still genuinely pending.
+    }
   }
+
+  if (state.status === "connected") {
+    const authJson = await readCodexAuthFile(sandbox);
+    if (!account) {
+      try {
+        const result = await runRpcInSandbox(sandbox, "account-read");
+        const value = result.account;
+        if (value && typeof value === "object") account = value as Record<string, unknown>;
+      } catch {}
+    }
+    return { state, account, authJson, sandbox };
+  }
+
+  return { state, account, authJson: null, sandbox };
+}
+
+export async function stopPendingChatGPTLogin(sandboxId: string) {
+  try {
+    const sandbox = await Sandbox.get({ sandboxId });
+    await sandbox.stop().catch(() => undefined);
+  } catch {}
 }
