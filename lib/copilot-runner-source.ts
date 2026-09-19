@@ -1,5 +1,5 @@
 export const copilotRunnerSource = String.raw`
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { CopilotClient } from "@github/copilot-sdk";
 
@@ -10,6 +10,7 @@ const task = process.env.COPILOT_TASK || "";
 const runMode = process.env.COPILOT_MODE || "pr";
 const workdir = process.env.COPILOT_WORKDIR || process.cwd();
 const agentDir = process.env.COPILOT_AGENT_DIR || path.join(workdir, ".codex", "agents");
+const copilotHome = path.join("/tmp", "copilot-home-" + process.pid);
 
 if (!rawToken) throw new Error("Missing COPILOT_GITHUB_TOKEN");
 if (!task.trim()) throw new Error("Missing COPILOT_TASK");
@@ -61,16 +62,19 @@ async function loadAgents() {
   return { agents, supervisorPrompt };
 }
 
+await mkdir(copilotHome, { recursive: true });
 const { agents, supervisorPrompt } = await loadAgents();
 emit("team.loaded", { count: agents.length + 1, model, reasoningEffort, mode: runMode });
 
-// In a multi-user web app, keep the runtime process unauthenticated and scope
-// the GitHub user token to the Copilot session itself. This is the SDK's
-// recommended pattern for user-specific quota, policy and model routing.
+// Empty mode deliberately disables ambient CLI state. Give every ephemeral
+// Vercel worker its own COPILOT_HOME so session state never leaks across runs
+// and never touches the target repository.
 const client = new CopilotClient({
   useLoggedInUser: false,
   mode: "empty",
   workingDirectory: workdir,
+  baseDirectory: copilotHome,
+  sessionIdleTimeoutSeconds: 900,
   logLevel: "error",
 });
 
