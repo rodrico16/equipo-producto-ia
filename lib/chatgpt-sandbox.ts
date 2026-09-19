@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Sandbox } from "@vercel/sandbox";
 
 export const CHATGPT_AUTH_NETWORK_POLICY = {
@@ -57,6 +58,7 @@ async function restoreAuth(sandbox: Sandbox, authJson?: string | null) {
 
 export async function createChatGPTAuthSandbox() {
   const sandbox = await Sandbox.create({
+    name: `codex-auth-${randomUUID().replaceAll("-", "").slice(0, 20)}`,
     persistent: false,
     timeout: 12 * 60 * 1000,
     networkPolicy: CHATGPT_AUTH_NETWORK_POLICY,
