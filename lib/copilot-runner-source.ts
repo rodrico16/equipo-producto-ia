@@ -5,7 +5,9 @@ import { CopilotClient } from "@github/copilot-sdk";
 
 const rawToken = process.env.COPILOT_GITHUB_TOKEN;
 const model = process.env.COPILOT_MODEL || "auto";
+const reasoningEffort = process.env.COPILOT_REASONING_EFFORT || "";
 const task = process.env.COPILOT_TASK || "";
+const runMode = process.env.COPILOT_MODE || "pr";
 const workdir = process.env.COPILOT_WORKDIR || process.cwd();
 const agentDir = process.env.COPILOT_AGENT_DIR || path.join(workdir, ".codex", "agents");
 
@@ -60,7 +62,7 @@ async function loadAgents() {
 }
 
 const { agents, supervisorPrompt } = await loadAgents();
-emit("team.loaded", { count: agents.length + 1, model });
+emit("team.loaded", { count: agents.length + 1, model, reasoningEffort, mode: runMode });
 
 const client = new CopilotClient({
   gitHubToken: githubToken,
@@ -72,16 +74,19 @@ const client = new CopilotClient({
 
 try {
   await client.start();
-  emit("copilot.connected", { model });
+  emit("copilot.connected", { model, reasoningEffort, mode: runMode });
 
-  const session = await client.createSession({
+  const sessionConfig = {
     model,
     workingDirectory: workdir,
     streaming: true,
     includeSubAgentStreamingEvents: true,
     customAgents: agents,
     onPermissionRequest: async () => ({ kind: "approve-once" }),
-  });
+  };
+  if (reasoningEffort) sessionConfig.reasoningEffort = reasoningEffort;
+
+  const session = await client.createSession(sessionConfig);
 
   session.on((event) => {
     const agentId = event.agentId;
@@ -121,26 +126,45 @@ try {
     }
   });
 
+  const modeRules = runMode === "chat"
+    ? [
+        "- Estás en modo conversación: respondé el pedido sin modificar archivos del workspace.",
+        "- Podés delegar análisis a especialistas si aporta valor, pero no ejecutes cambios de código ni operaciones de entrega.",
+        "- No hagas git commit, git push ni crees Pull Requests.",
+        "- La respuesta final debe ser útil y directa, no un reporte de implementación.",
+      ]
+    : runMode === "draft"
+      ? [
+          "- Trabajá sobre el repositorio abierto y completá el cambio solicitado dentro del Sandbox.",
+          "- Delegá a especialistas cuando aporten valor y ejecutá las verificaciones/tests relevantes.",
+          "- No hagas git commit, git push ni crees Pull Requests; este modo es un borrador privado.",
+          "- Conservá cambios existentes y evitá operaciones destructivas no necesarias.",
+          "- La respuesta final debe resumir qué cambió y qué verificaste.",
+        ]
+      : [
+          "- No te quedes en un plan: implementá el cambio completo en el repositorio abierto.",
+          "- Delegá a los agentes especializados que realmente aporten valor y dejá que implementen/revisen.",
+          "- Antes de cerrar, ejecutá las verificaciones y tests relevantes disponibles en el proyecto.",
+          "- No hagas git commit, git push ni crees PR; el control room hace la publicación después.",
+          "- Conservá cambios existentes del usuario y evitá operaciones destructivas no necesarias.",
+          "- La respuesta final debe resumir qué cambió, pruebas ejecutadas, riesgos y pendientes.",
+        ];
+
   const prompt = [
-    "Actuás como Supervisor del equipo de Producto e Ingeniería definido por este repositorio.",
+    "Actuás como Supervisor del equipo de Producto e Ingeniería definido por esta aplicación.",
     supervisorPrompt,
     "",
     "OBJETIVO DEL USUARIO:",
     task,
     "",
     "REGLAS DE EJECUCIÓN:",
-    "- No te quedes en un plan: implementá el cambio completo en el repositorio abierto.",
-    "- Delegá a los agentes especializados que realmente aporten valor y dejá que implementen/revisen.",
-    "- Antes de cerrar, ejecutá las verificaciones y tests relevantes disponibles en el proyecto.",
-    "- No hagas git commit, git push ni crees PR; el control room hace la publicación después.",
+    ...modeRules,
     "- No accedas a credenciales ni intentes ampliar los permisos disponibles.",
-    "- Conservá cambios existentes del usuario y evitá operaciones destructivas no necesarias.",
-    "- La respuesta final debe resumir qué cambió, pruebas ejecutadas, riesgos y pendientes.",
   ].join("\n");
 
-  emit("run.started", { task });
+  emit("run.started", { task, mode: runMode });
   await session.sendAndWait({ prompt });
-  emit("run.completed", { sessionId: session.sessionId });
+  emit("run.completed", { sessionId: session.sessionId, mode: runMode });
   await session.disconnect();
 } catch (error) {
   emit("run.failed", { message: error instanceof Error ? error.message : String(error) });
