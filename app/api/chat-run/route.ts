@@ -2,6 +2,7 @@ import type { Sandbox } from "@vercel/sandbox";
 import { readCodexAuth } from "@/lib/chatgpt-auth-cookie";
 import { createChatGPTWorkerSandbox } from "@/lib/chatgpt-sandbox";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
+import { finishRun, getRun, startRun } from "@/lib/run-store";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -124,8 +125,14 @@ export async function POST(request: Request) {
   if (!prompt) return Response.json({ error: "Prompt is required" }, { status: 400 });
   if (mode === "draft" && !repoPattern.test(repo)) return Response.json({ error: "Choose a repository first" }, { status: 400 });
 
+  let runOwner = "";
+  let runId = request.headers.get("x-run-id") || "";
   try {
-    await requireControlRoomIdentity();
+    const identity = await requireControlRoomIdentity();
+    runOwner = identity.key;
+    const existing = runId ? getRun(runId, runOwner) : null;
+    if (existing) return Response.json(existing, { status: 409, headers: { "X-Run-Id": existing.id } });
+    runId = startRun(runOwner, runId).id;
   } catch {
     return Response.json({ error: "Session required" }, { status: 401 });
   }
@@ -257,15 +264,19 @@ export async function POST(request: Request) {
               },
             }));
           }
+          finishRun(runId, runOwner);
           controller.enqueue(line({
             type: "control.done",
             data: { delivery: "draft", repo, baseBranch, message: "Borrador terminado. El patch quedó guardado en este chat y no se escribió nada en GitHub." },
           }));
         } else {
+          finishRun(runId, runOwner);
           controller.enqueue(line({ type: "control.done", data: { delivery: "chat", message: "Chat terminado." } }));
         }
       } catch (error) {
-        controller.enqueue(line({ type: "control.error", data: { message: error instanceof Error ? error.message : String(error) } }));
+        const message = error instanceof Error ? error.message : String(error);
+        finishRun(runId, runOwner, message);
+        controller.enqueue(line({ type: "control.error", data: { message } }));
       } finally {
         if (sandbox) await sandbox.stop().catch(() => undefined);
         controller.close();
@@ -276,6 +287,7 @@ export async function POST(request: Request) {
   return new Response(stream, {
     headers: {
       "Content-Type": "application/x-ndjson; charset=utf-8",
+      "X-Run-Id": runId,
       "Cache-Control": "no-store, no-transform",
       "X-Content-Type-Options": "nosniff",
     },
