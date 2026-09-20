@@ -2,20 +2,70 @@
 
 import { useEffect, useRef, useState } from "react";
 
+type Provider = "github" | "chatgpt";
 type Flow = {
-  provider: "github" | "chatgpt";
+  provider: Provider;
   title: string;
   message: string;
   code?: string | null;
   url?: string | null;
   error?: string | null;
   readyToAuthorize?: boolean;
+  reauthRequired?: boolean;
 };
+
+type AuthRequiredDetail = { provider?: Provider; message?: string };
+
+function authLike(message: string) {
+  const value = message.toLowerCase();
+  return [
+    "401",
+    "unauthorized",
+    "authentication",
+    "not authenticated",
+    "not logged in",
+    "login required",
+    "session expired",
+    "sesión venc",
+    "token expired",
+    "expired token",
+    "refresh token",
+    "auth_required",
+  ].some((needle) => value.includes(needle));
+}
+
+function requestUrl(input: RequestInfo | URL) {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
+function providerFromRequest(input: RequestInfo | URL, init?: RequestInit): Provider | null {
+  const url = requestUrl(input);
+  if (url.includes("/api/chatgpt/") || url.includes("/api/chat-run")) return "chatgpt";
+  if (url.includes("/api/github/") || url.includes("/api/auth/github") || url.includes("/api/copilot-run")) return "github";
+  if (url.includes("/api/run") || url.includes("/api/agent-run")) {
+    const body = typeof init?.body === "string" ? init.body : "";
+    if (body) {
+      try {
+        const parsed = JSON.parse(body) as { provider?: string };
+        if (parsed.provider === "chatgpt") return "chatgpt";
+        if (parsed.provider === "copilot") return "github";
+      } catch {}
+    }
+  }
+  return null;
+}
 
 export function ConnectionExperience() {
   const [flow, setFlow] = useState<Flow | null>(null);
   const popupRef = useRef<Window | null>(null);
   const timerRef = useRef<number | null>(null);
+  const nativeFetchRef = useRef<typeof window.fetch | null>(null);
+
+  function rawFetch(input: RequestInfo | URL, init?: RequestInit) {
+    return (nativeFetchRef.current ?? window.fetch)(input, init);
+  }
 
   function stopPolling() {
     if (timerRef.current) window.clearTimeout(timerRef.current);
@@ -31,23 +81,43 @@ export function ConnectionExperience() {
       title: "Conectado",
       message: "Listo. Actualizando tu espacio…",
       code: null,
+      error: null,
       readyToAuthorize: false,
+      reauthRequired: false,
     } : null);
     window.setTimeout(() => window.location.reload(), 450);
   }
 
+  function requireReauth(provider: Provider, message?: string) {
+    setFlow((current) => {
+      if (current && !current.reauthRequired) return current;
+      return {
+        provider,
+        title: provider === "github" ? "GitHub necesita reconectarse" : "ChatGPT necesita reconectarse",
+        message: message || "La sesión dejó de ser válida después de un tiempo de inactividad. Volvé a autenticarte para continuar.",
+        error: "Sesión vencida",
+        readyToAuthorize: false,
+        reauthRequired: true,
+      };
+    });
+  }
+
   async function pollGitHub() {
     try {
-      const response = await fetch("/api/session", { cache: "no-store" });
-      const body = await response.json() as { githubConnected?: boolean };
+      const response = await rawFetch("/api/session", { cache: "no-store" });
+      const body = await response.json() as { githubConnected?: boolean; githubAuthExpired?: boolean };
       if (body.githubConnected) return finish();
+      if (body.githubAuthExpired) {
+        requireReauth("github", "La autorización de GitHub venció. Volvé a iniciar sesión para recuperar repositorios y Copilot.");
+        return;
+      }
     } catch {}
     timerRef.current = window.setTimeout(pollGitHub, 1500);
   }
 
   async function pollChatGPT() {
     try {
-      const response = await fetch("/api/chatgpt/status", { cache: "no-store" });
+      const response = await rawFetch("/api/chatgpt/status", { cache: "no-store" });
       const body = await response.json() as { status?: string; error?: string };
       if (body.status === "connected") return finish();
       if (body.status === "failed" || body.status === "expired") {
@@ -57,6 +127,7 @@ export function ConnectionExperience() {
           message: body.error || "La autorización venció. Probá nuevamente.",
           error: body.error || "Autorización vencida",
           readyToAuthorize: false,
+          reauthRequired: true,
         } : current);
         return;
       }
@@ -70,13 +141,14 @@ export function ConnectionExperience() {
     return popup;
   }
 
-  function startGitHub() {
+  async function startGitHub() {
     stopPolling();
     setFlow({
       provider: "github",
       title: "Conectando GitHub",
-      message: "Aprobá la integración en GitHub. La primera vez puede pedirte crearla e instalarla; después queda lista para reutilizar.",
+      message: "Aprobá la integración en GitHub. Al reconectar reemplazamos la sesión anterior por una nueva.",
     });
+    await rawFetch("/api/github/device/logout", { method: "POST" }).catch(() => undefined);
     openPopup("/api/auth/github", "epia-github");
     void pollGitHub();
   }
@@ -89,6 +161,7 @@ export function ConnectionExperience() {
       textarea.style.position = "fixed";
       textarea.style.left = "-9999px";
       textarea.style.top = "0";
+      textarea.style.fontSize = "16px";
       document.body.appendChild(textarea);
       textarea.focus();
       textarea.select();
@@ -116,12 +189,12 @@ export function ConnectionExperience() {
     setFlow({
       provider: "chatgpt",
       title: "Preparando ChatGPT",
-      message: "Generando tu código de autorización…",
+      message: "Generando un nuevo código de autorización…",
       readyToAuthorize: false,
     });
 
     try {
-      const response = await fetch("/api/chatgpt/login", { method: "POST" });
+      const response = await rawFetch("/api/chatgpt/login", { method: "POST" });
       const body = await response.json() as { verificationUrl?: string; userCode?: string; error?: string };
       if (!response.ok || !body.verificationUrl || !body.userCode) {
         throw new Error(body.error || "No se pudo iniciar la autorización de ChatGPT");
@@ -130,7 +203,7 @@ export function ConnectionExperience() {
       setFlow({
         provider: "chatgpt",
         title: "Código listo",
-        message: "Primero copiá el código. Recién después abrimos ChatGPT para autorizar la cuenta.",
+        message: "Primero copiá el código. Después abrimos ChatGPT para autorizar nuevamente la cuenta.",
         code: body.userCode,
         url: body.verificationUrl,
         readyToAuthorize: true,
@@ -142,6 +215,7 @@ export function ConnectionExperience() {
         message: error instanceof Error ? error.message : String(error),
         error: error instanceof Error ? error.message : String(error),
         readyToAuthorize: false,
+        reauthRequired: true,
       });
     }
   }
@@ -177,7 +251,53 @@ export function ConnectionExperience() {
     void pollChatGPT();
   }
 
+  async function inspectResponse(input: RequestInfo | URL, init: RequestInit | undefined, response: Response) {
+    const provider = providerFromRequest(input, init);
+    if (response.status === 401 && provider) {
+      requireReauth(provider);
+      return;
+    }
+
+    const url = requestUrl(input);
+    if (url.includes("/api/session") && response.ok) {
+      try {
+        const body = await response.clone().json() as { githubAuthExpired?: boolean };
+        if (body.githubAuthExpired) requireReauth("github", "La sesión de GitHub venció por inactividad o revocación. Reconectala para continuar.");
+      } catch {}
+      return;
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (!provider || !response.ok || !contentType.includes("application/x-ndjson")) return;
+    try {
+      const text = await response.clone().text();
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line) as { type?: string; data?: { provider?: string; message?: string } };
+          if (event.type === "auth.required") {
+            requireReauth(event.data?.provider === "github" ? "github" : provider, event.data?.message);
+            return;
+          }
+          if (event.type === "control.error" && authLike(event.data?.message || "")) {
+            requireReauth(provider, event.data?.message);
+            return;
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
   useEffect(() => {
+    const originalFetch = window.fetch.bind(window);
+    nativeFetchRef.current = originalFetch;
+    const wrappedFetch: typeof window.fetch = async (input, init) => {
+      const response = await originalFetch(input, init);
+      void inspectResponse(input, init, response.clone());
+      return response;
+    };
+    window.fetch = wrappedFetch;
+
     const onClick = (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
       if (!target) return;
@@ -187,7 +307,7 @@ export function ConnectionExperience() {
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-        startGitHub();
+        void startGitHub();
         return;
       }
 
@@ -208,21 +328,30 @@ export function ConnectionExperience() {
       if (event.data?.type === "epia:github-connected") finish();
     };
 
+    const onAuthRequired = (event: Event) => {
+      const detail = (event as CustomEvent<AuthRequiredDetail>).detail;
+      if (detail?.provider) requireReauth(detail.provider, detail.message);
+    };
+
     const onFocus = () => {
-      if (flow?.provider === "github") void pollGitHub();
-      if (flow?.provider === "chatgpt" && !flow.readyToAuthorize) void pollChatGPT();
+      if (flow?.provider === "github" && !flow.reauthRequired) void pollGitHub();
+      if (flow?.provider === "chatgpt" && !flow.readyToAuthorize && !flow.reauthRequired) void pollChatGPT();
     };
 
     document.addEventListener("click", onClick, true);
     window.addEventListener("message", onMessage);
+    window.addEventListener("epia:reauth-required", onAuthRequired as EventListener);
     window.addEventListener("focus", onFocus);
     return () => {
+      if (window.fetch === wrappedFetch) window.fetch = originalFetch;
+      nativeFetchRef.current = null;
       document.removeEventListener("click", onClick, true);
       window.removeEventListener("message", onMessage);
+      window.removeEventListener("epia:reauth-required", onAuthRequired as EventListener);
       window.removeEventListener("focus", onFocus);
       stopPolling();
     };
-  }, [flow?.provider, flow?.readyToAuthorize]);
+  }, [flow?.provider, flow?.readyToAuthorize, flow?.reauthRequired]);
 
   if (!flow) return null;
 
@@ -232,24 +361,33 @@ export function ConnectionExperience() {
         <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
           <div style={{ width: 42, height: 42, flex: "0 0 auto", borderRadius: 999, display: "grid", placeItems: "center", background: flow.error ? "#482427" : "#163b33", color: flow.error ? "#ffb4b4" : "#74efca", fontWeight: 900 }}>{flow.error ? "!" : flow.provider === "github" ? "GH" : "GPT"}</div>
           <div style={{ minWidth: 0, flex: 1 }}>
-            <strong style={{ display: "block", color: "#e9edef", fontSize: 15 }}>{flow.title}</strong>
-            <span style={{ display: "block", color: "#9aacb5", fontSize: 12, lineHeight: 1.5, marginTop: 4 }}>{flow.message}</span>
+            <strong style={{ display: "block", color: "#e9edef", fontSize: 16 }}>{flow.title}</strong>
+            <span style={{ display: "block", color: "#9aacb5", fontSize: 13, lineHeight: 1.5, marginTop: 4 }}>{flow.message}</span>
             {flow.code && (
               <button
                 onClick={() => void copyCode(flow.code || "")}
-                style={{ marginTop: 10, border: "1px solid #34505a", borderRadius: 9, padding: "9px 12px", background: "#0b141a", color: "#e9edef", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontWeight: 900, letterSpacing: ".06em" }}
+                style={{ marginTop: 10, border: "1px solid #34505a", borderRadius: 9, padding: "9px 12px", background: "#0b141a", color: "#e9edef", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontWeight: 900, letterSpacing: ".06em", fontSize: 16 }}
               >
                 {flow.code}
               </button>
             )}
           </div>
-          <button onClick={() => { stopPolling(); try { popupRef.current?.close(); } catch {} setFlow(null); }} aria-label="Cerrar" style={{ width: 32, height: 32, border: 0, borderRadius: 999, background: "transparent", color: "#94a5ad", fontSize: 22 }}>×</button>
+          <button onClick={() => { stopPolling(); try { popupRef.current?.close(); } catch {} setFlow(null); }} aria-label="Cerrar" style={{ width: 36, height: 36, border: 0, borderRadius: 999, background: "transparent", color: "#94a5ad", fontSize: 22 }}>×</button>
         </div>
+
+        {flow.reauthRequired && (
+          <button
+            onClick={() => flow.provider === "github" ? void startGitHub() : void startChatGPT()}
+            style={{ width: "100%", marginTop: 14, border: 0, borderRadius: 10, padding: "13px 14px", background: "#00a884", color: "#041b16", fontWeight: 900, fontSize: 16 }}
+          >
+            Reconectar {flow.provider === "github" ? "GitHub" : "ChatGPT"}
+          </button>
+        )}
 
         {flow.provider === "chatgpt" && flow.readyToAuthorize && flow.code && flow.url && (
           <button
             onClick={() => void copyAndOpenChatGPT()}
-            style={{ width: "100%", marginTop: 14, border: 0, borderRadius: 10, padding: "13px 14px", background: "#00a884", color: "#041b16", fontWeight: 900 }}
+            style={{ width: "100%", marginTop: 14, border: 0, borderRadius: 10, padding: "13px 14px", background: "#00a884", color: "#041b16", fontWeight: 900, fontSize: 16 }}
           >
             Copiar código y abrir ChatGPT
           </button>
