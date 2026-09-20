@@ -44,6 +44,7 @@ El contenido generado por IA se renderiza con el componente `MessageResponse` de
 - **IA:** `@github/copilot-sdk`.
 - **Autenticación IA:** token de GitHub OAuth del usuario; Copilot consume su suscripción y sus modelos disponibles.
 - **Ejecución:** `@vercel/sandbox` con workspace efímero.
+- **Recuperación:** cada ejecución recibe un identificador `X-Run-Id`; la UI lo conserva y consulta `GET /api/runs/[id]` después de recargar para evitar reenvíos con la misma clave. El registro actual vive en memoria del proceso; para producción distribuida debe conectarse a KV/SQL durable.
 - **Render de IA:** Streamdown + plugins usados por AI Elements.
 - **Entrega:** Git branch + Pull Request por API de GitHub.
 

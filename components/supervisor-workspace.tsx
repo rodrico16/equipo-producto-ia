@@ -94,6 +94,7 @@ type ChatThread = {
   prUrl: string;
   pullRequests: PullRequestRecord[];
   error: string;
+  runId?: string;
 };
 
 type ToolArgs = Record<string, unknown>;
@@ -137,7 +138,7 @@ function defaultChat(): ChatThread {
     id: uid("chat"), title: "Nuevo chat", createdAt: now, updatedAt: now,
     mode: "chat", provider: "chatgpt", repo: "", branch: "main", model: "", reasoningEffort: "",
     draft: "", status: "Listo", running: false, messages: [], usedAgents: [], agentThreads: {}, queuedSupervisor: [],
-    diffStat: "", prUrl: "", pullRequests: [], error: "",
+    diffStat: "", prUrl: "", pullRequests: [], error: "", runId: "",
   };
 }
 function normalizeChat(input: Partial<ChatThread>): ChatThread {
@@ -159,7 +160,7 @@ function normalizeChat(input: Partial<ChatThread>): ChatThread {
   const knownPrs = new Set(supervisorMessages.filter((message) => message.kind === "pr" && message.pullRequest?.url).map((message) => message.pullRequest!.url));
   for (const pr of pullRequests) if (!knownPrs.has(pr.url)) supervisorMessages.push({ id: `pr:${pr.url}`, kind: "pr", text: "Pull Request creado", at: pr.at, agent: "supervisor", displayName: "Supervisor", pullRequest: pr });
   supervisorMessages.sort((a, b) => a.at - b.at);
-  return { ...base, running: false, messages: supervisorMessages.slice(-200), agentThreads: threads, queuedSupervisor: input.queuedSupervisor || [], pullRequests };
+  return { ...base, running: Boolean(base.running && base.runId), messages: supervisorMessages.slice(-200), agentThreads: threads, queuedSupervisor: input.queuedSupervisor || [], pullRequests };
 }
 
 export default function SupervisorWorkspace() {
@@ -244,13 +245,36 @@ export default function SupervisorWorkspace() {
     if (!hydrated) return;
     const safe = chats.slice(0, 30).map((chat) => ({
       ...chat,
-      running: false,
+      running: Boolean(chat.running && chat.runId),
       messages: chat.messages.slice(-200).map((m) => ({ ...m, streaming: false })),
       agentThreads: Object.fromEntries(Object.entries(chat.agentThreads).map(([name, thread]) => [name, { ...thread, status: thread.status === "running" ? "idle" : thread.status, messages: thread.messages.slice(-120).map((m) => ({ ...m, streaming: false })) }])),
     }));
     localStorage.setItem(STORAGE_KEY, JSON.stringify(safe));
     if (activeId) localStorage.setItem(ACTIVE_KEY, activeId);
   }, [chats, activeId, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const recover = async () => {
+      for (const chat of chatsRef.current) {
+        if (!chat.runId || !chat.running) continue;
+        try {
+          const response = await fetch(`/api/runs/${encodeURIComponent(chat.runId)}`, { cache: "no-store" });
+          if (response.status === 404) {
+            updateChat(chat.id, (current) => ({ ...current, running: false, status: "Ejecución no disponible", error: "La ejecución se perdió al reiniciar el servidor. Podés reintentar sin duplicar este turno.", updatedAt: Date.now() }));
+            continue;
+          }
+          if (!response.ok) continue;
+          const state = await response.json() as { status?: string; error?: string };
+          if (state.status === "completed") updateChat(chat.id, (current) => ({ ...current, running: false, status: "Turno completado", error: "", updatedAt: Date.now() }));
+          if (state.status === "failed") updateChat(chat.id, (current) => ({ ...current, running: false, status: "Turno detenido", error: state.error || "La ejecución falló", updatedAt: Date.now() }));
+        } catch { /* transient disconnect; retry on the next interval */ }
+      }
+    };
+    void recover();
+    const timer = window.setInterval(() => void recover(), 3000);
+    return () => window.clearInterval(timer);
+  }, [hydrated]);
 
   useEffect(() => {
     if (chatGPT.status === "pending") {
@@ -458,13 +482,13 @@ export default function SupervisorWorkspace() {
     const history = thread.messages.filter((m) => m.kind === "user" || m.kind === "agent").slice(-12).map((m) => `${m.kind === "user" ? "USUARIO" : "SUPERVISOR"}: ${m.text}`).join("\n\n");
     const specialist = specialistContext(thread);
     const requestPrompt = [history ? `CONTEXTO DEL CHAT CON SUPERVISOR:\n${history}` : "", specialist ? `INTERVENCIONES DIRECTAS CON ESPECIALISTAS:\n${specialist}` : "", `NUEVO PEDIDO DEL USUARIO:\n${prompt}`].filter(Boolean).join("\n\n");
-    updateChat(chatId, (chat) => ({ ...chat, title: chat.title === "Nuevo chat" ? titleFrom(prompt) : chat.title, draft: "", running: true, status: "Supervisor está preparando el turno…", error: "", updatedAt: Date.now(), messages: alreadyAppended ? chat.messages : [...chat.messages, { id: `${runId}:user`, kind: "user", text: prompt, at: Date.now() } as ChatMessage].slice(-220) }));
+    updateChat(chatId, (chat) => ({ ...chat, title: chat.title === "Nuevo chat" ? titleFrom(prompt) : chat.title, draft: "", running: true, runId, status: "Supervisor está preparando el turno…", error: "", updatedAt: Date.now(), messages: alreadyAppended ? chat.messages : [...chat.messages, { id: `${runId}:user`, kind: "user", text: prompt, at: Date.now() } as ChatMessage].slice(-220) }));
     try {
       const endpoint = thread.mode === "pr" ? "/api/run" : thread.provider === "copilot" ? "/api/copilot-run" : "/api/chat-run";
       const payload = thread.mode === "pr"
         ? { repo: thread.repo, branch: thread.branch, provider: thread.provider, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt }
         : { mode: thread.mode, repo: thread.repo, branch: thread.branch, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt };
-      const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal: controller.signal });
+      const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "X-Run-Id": runId }, body: JSON.stringify(payload) });
       if (!response.ok || !response.body) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
       const reader = response.body.getReader();
       activeRunsRef.current.get(runId)!.reader = reader;
