@@ -394,6 +394,13 @@ export default function SupervisorWorkspace() {
       if (name === "supervisor") system(chatId, text, "bad"); else appendAgent(chatId, name, { id: uid("tool-error"), kind: "system", text, tone: "bad", at: Date.now() }, true);
       return;
     }
+    if (event.type === "tool.completed") {
+      const name = map[agentId] || agentId;
+      const toolName = asString(data.toolName) || "herramienta";
+      const text = `${displayName(name)} completó ${toolName}`;
+      if (name === "supervisor") system(chatId, text, "good"); else appendAgent(chatId, name, { id: uid("tool-done"), kind: "system", text, tone: "good", at: Date.now() });
+      return;
+    }
     if (event.type === "agent.delta" || event.type === "agent.message") {
       const name = map[agentId] || agentId; const chunk = asString(data.content); if (!chunk) return;
       const messageId = `${runId}:${asString(data.messageId) || agentId}`;
@@ -496,6 +503,7 @@ export default function SupervisorWorkspace() {
     const data = event.data ?? {};
     if (event.type === "tool.started") { appendAgent(chatId, name, { id: uid("direct-tool"), kind: "system", text: `${displayName(name)} usa ${asString(data.toolName) || "una herramienta"}`, at: Date.now() }); return; }
     if (event.type === "tool.completed" && data.success === false) { appendAgent(chatId, name, { id: uid("direct-tool-error"), kind: "system", text: `Herramienta de ${displayName(name)} falló`, tone: "bad", at: Date.now() }, true); return; }
+    if (event.type === "tool.completed") { appendAgent(chatId, name, { id: uid("direct-tool-done"), kind: "system", text: `${displayName(name)} completó ${asString(data.toolName) || "la herramienta"}`, tone: "good", at: Date.now() }); return; }
     if (event.type === "agent.delta" || event.type === "agent.message") { const chunk = asString(data.content); if (!chunk) return; upsertAgentReply(chatId, name, `${runId}:${asString(data.messageId) || name}`, chunk, event.type === "agent.delta", event.type === "agent.message"); return; }
     if (event.type === "control.error" || event.type === "run.failed") { const message = asString(data.message) || "El especialista falló"; updateAgentThread(chatId, name, (thread) => ({ ...thread, status: "error", error: message, updatedAt: Date.now() })); }
   }
