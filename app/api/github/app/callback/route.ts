@@ -43,7 +43,7 @@ export async function GET(request: Request) {
 
   const userResponse = await fetch("https://api.github.com/user", {
     headers: {
-      Authorization: `Bearer ${tokenBody.access_token}`,
+      Authorization: "Bearer " + tokenBody.access_token,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2026-03-10",
     },
