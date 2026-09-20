@@ -1,5 +1,5 @@
 import { requireControlRoomIdentity } from "@/lib/server-auth";
-import { readCodexAuth } from "@/lib/chatgpt-auth-cookie";
+import { clearCodexAuth, readCodexAuth } from "@/lib/chatgpt-auth-cookie";
 import { runCodexRpcWithAuth } from "@/lib/chatgpt-codex";
 
 export const runtime = "nodejs";
@@ -13,6 +13,21 @@ type CodexModel = {
   defaultReasoningEffort?: string;
   supportedReasoningEfforts?: Array<{ reasoningEffort?: string; description?: string }>;
 };
+
+function isAuthError(message: string) {
+  const value = message.toLowerCase();
+  return [
+    "401",
+    "unauthorized",
+    "authentication",
+    "not authenticated",
+    "not logged in",
+    "login required",
+    "token expired",
+    "expired token",
+    "refresh token",
+  ].some((needle) => value.includes(needle));
+}
 
 export async function GET() {
   try {
@@ -39,6 +54,10 @@ export async function GET() {
     return Response.json({ models });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (isAuthError(message)) {
+      await clearCodexAuth();
+      return Response.json({ error: "La sesión de ChatGPT venció. Reconectá tu cuenta para continuar.", models: [], authExpired: true }, { status: 401 });
+    }
     return Response.json({ error: message, models: [] }, { status: message === "SESSION_REQUIRED" ? 401 : 502 });
   }
 }
