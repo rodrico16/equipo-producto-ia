@@ -143,14 +143,44 @@ export function ConnectionExperience() {
 
   async function startGitHub() {
     stopPolling();
+    const popup = openPopup("about:blank", "epia-github");
+    if (!popup) {
+      setFlow({
+        provider: "github",
+        title: "No se pudo abrir GitHub",
+        message: "El navegador bloqueó la ventana de autorización. Permití ventanas emergentes y volvé a intentar.",
+        error: "Ventana emergente bloqueada",
+        readyToAuthorize: false,
+        reauthRequired: true,
+      });
+      return;
+    }
+
     setFlow({
       provider: "github",
       title: "Conectando GitHub",
       message: "Aprobá la integración en GitHub. Al reconectar reemplazamos la sesión anterior por una nueva.",
     });
-    await rawFetch("/api/github/device/logout", { method: "POST" }).catch(() => undefined);
-    openPopup("/api/auth/github", "epia-github");
-    void pollGitHub();
+
+    try {
+      const response = await rawFetch("/api/github/device/logout", { method: "POST" });
+      if (!response.ok) {
+        throw new Error("No se pudo limpiar la autorización anterior. Probá nuevamente.");
+      }
+      popup.location.href = "/api/auth/github";
+      void pollGitHub();
+    } catch (error) {
+      stopPolling();
+      try { popup.close(); } catch {}
+      setFlow({
+        provider: "github",
+        title: "No se pudo iniciar GitHub",
+        message: error instanceof Error ? error.message : "No se pudo preparar la autorización. Probá nuevamente.",
+        error: error instanceof Error ? error.message : "Error al preparar la autorización",
+        readyToAuthorize: false,
+        reauthRequired: true,
+      });
+    }
   }
 
   function legacyCopy(text: string) {
