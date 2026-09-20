@@ -19,8 +19,6 @@ const turnTimeoutMs = Number.isFinite(requestedTurnTimeout)
 if (!rawToken) throw new Error("Missing COPILOT_GITHUB_TOKEN");
 if (!task.trim()) throw new Error("Missing COPILOT_TASK");
 
-// Keep the credential in memory only. Tool subprocesses inherit process.env,
-// so remove it before the Copilot runtime (and its bash tool) starts.
 const githubToken = rawToken;
 delete process.env.COPILOT_GITHUB_TOKEN;
 
@@ -36,6 +34,41 @@ function valueOf(source, key) {
 function multilineOf(source, key) {
   const match = source.match(new RegExp(key + "\\s*=\\s*'''([\\s\\S]*?)'''", "m"));
   return match?.[1]?.trim() || "";
+}
+
+function objectOf(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  return {};
+}
+
+function taskDelegation(toolName, rawArguments) {
+  if (String(toolName || "").toLowerCase() !== "task") return null;
+  const args = objectOf(rawArguments);
+  const nested = objectOf(args.input || args.arguments || args.params);
+  const source = { ...nested, ...args };
+  const agentName = String(
+    source.agent_type ||
+    source.agentType ||
+    source.agent_name ||
+    source.agentName ||
+    source.agent ||
+    ""
+  ).trim();
+  const assignment = String(
+    source.prompt ||
+    source.task ||
+    source.message ||
+    source.description ||
+    source.instructions ||
+    ""
+  ).trim();
+  return agentName ? { agentName, assignment } : null;
 }
 
 async function loadAgents() {
@@ -70,9 +103,6 @@ await mkdir(copilotHome, { recursive: true });
 const { agents, supervisorPrompt } = await loadAgents();
 emit("team.loaded", { count: agents.length + 1, model, reasoningEffort, mode: runMode });
 
-// Empty mode deliberately disables ambient CLI state. Give every ephemeral
-// Vercel worker its own COPILOT_HOME so session state never leaks across runs
-// and never touches the target repository.
 const client = new CopilotClient({
   useLoggedInUser: false,
   mode: "empty",
@@ -86,10 +116,6 @@ try {
   emit("runtime.stage", { stage: "client.start", message: "Iniciando runtime de Copilot…" });
   await client.start();
 
-  // In empty mode Copilot exposes no tools unless the session opts in.
-  // Conversation-only chats get the SDK's session-isolated collaboration tools.
-  // Repository modes additionally get only the local coding tools needed to
-  // inspect, edit and verify files inside the already-isolated Vercel Sandbox.
   const availableTools = new ToolSet().addBuiltIn(BuiltInTools.Isolated);
   if (runMode !== "chat") {
     availableTools.addBuiltIn(["bash", "view", "edit", "create_file", "grep", "glob"]);
@@ -130,10 +156,24 @@ try {
       return;
     }
     if (event.type === "tool.execution_start") {
+      const delegation = taskDelegation(event.data.toolName, event.data.arguments);
+      if (delegation) {
+        const configured = agents.find((agent) => agent.name === delegation.agentName);
+        emit("subagent.started", {
+          toolCallId: event.data.toolCallId,
+          agentName: delegation.agentName,
+          agentDisplayName: configured?.displayName || delegation.agentName,
+          agentDescription: configured?.description || "Especialista del equipo",
+          assignment: delegation.assignment,
+          synthetic: true,
+        }, delegation.agentName);
+      }
       emit("tool.started", {
         toolCallId: event.data.toolCallId,
         toolName: event.data.toolName,
-        arguments: event.data.arguments,
+        arguments: delegation
+          ? { agent_type: delegation.agentName, prompt: delegation.assignment }
+          : event.data.arguments,
       }, agentId || "supervisor");
       return;
     }
