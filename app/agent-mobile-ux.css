@@ -1,4 +1,10 @@
 @media (max-width: 940px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+
   aside[class*="agentRail"] {
     background: #0b141a !important;
   }
