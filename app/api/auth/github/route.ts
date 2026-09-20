@@ -43,6 +43,10 @@ export async function GET(request: Request) {
   const manifest = JSON.stringify({
     name: `AI Product Team ${suffix}`,
     url: origin,
+    hook_attributes: {
+      url: `${origin}/api/github/app/callback`,
+      active: false,
+    },
     redirect_url: `${origin}/api/github/app/manifest`,
     callback_urls: [`${origin}/api/github/app/callback`],
     description: "Conecta repositorios con AI Product Team Control Room.",
