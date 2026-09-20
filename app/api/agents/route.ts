@@ -9,6 +9,24 @@ function field(source: string, key: string) {
   return match?.[1]?.trim() ?? "";
 }
 
+function displayName(name: string) {
+  const replacements: Record<string, string> = {
+    qa: "QA",
+    ux: "UX",
+    ui: "UI",
+    api: "API",
+    devops: "DevOps",
+    ejecucion: "Ejecución",
+    regresion: "Regresión",
+  };
+  return name
+    .replaceAll("_", " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => replacements[word.toLowerCase()] ?? `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
 export async function GET() {
   const directory = path.join(process.cwd(), ".codex", "agents");
   try {
@@ -19,7 +37,7 @@ export async function GET() {
         const name = field(source, "name") || file.replace(/\.toml$/, "");
         return {
           name,
-          displayName: name.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase()),
+          displayName: displayName(name),
           description: field(source, "description") || name,
           supervisor: name === "supervisor",
         };
