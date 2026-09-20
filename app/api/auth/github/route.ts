@@ -25,12 +25,18 @@ function connectingPage(action: string, state: string, manifest: string) {
 }
 
 export async function GET(request: Request) {
+  const url = new URL(request.url);
   const config = await readGitHubAppConfig();
   if (config) {
-    return Response.redirect(`https://github.com/apps/${encodeURIComponent(config.slug)}/installations/new`, 302);
+    const state = await createManifestState();
+    const callback = `${url.origin}/api/github/app/callback`;
+    const authorize = new URL("https://github.com/login/oauth/authorize");
+    authorize.searchParams.set("client_id", config.clientId);
+    authorize.searchParams.set("redirect_uri", callback);
+    authorize.searchParams.set("state", state);
+    return Response.redirect(authorize, 302);
   }
 
-  const url = new URL(request.url);
   const origin = url.origin;
   const state = await createManifestState();
   const suffix = Math.random().toString(36).slice(2, 8);
