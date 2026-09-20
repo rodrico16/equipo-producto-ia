@@ -28,6 +28,8 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Validate embedded runners
         run: npm run validate:runner
+      - name: Validate specialist assignment bridge
+        run: npm run validate:assignment-bridge
       - name: Typecheck
         run: npm run typecheck
       - name: Build
