@@ -488,7 +488,12 @@ export default function SupervisorWorkspace() {
       const payload = thread.mode === "pr"
         ? { repo: thread.repo, branch: thread.branch, provider: thread.provider, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt }
         : { mode: thread.mode, repo: thread.repo, branch: thread.branch, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt };
-      const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "X-Run-Id": runId }, body: JSON.stringify(payload) });
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Run-Id": runId },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
       if (!response.ok || !response.body) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
       const reader = response.body.getReader();
       activeRunsRef.current.get(runId)!.reader = reader;
