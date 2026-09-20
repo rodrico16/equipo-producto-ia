@@ -62,6 +62,7 @@ export function ConnectionExperience() {
   const popupRef = useRef<Window | null>(null);
   const timerRef = useRef<number | null>(null);
   const nativeFetchRef = useRef<typeof window.fetch | null>(null);
+  const finishScheduledRef = useRef(false);
 
   function rawFetch(input: RequestInfo | URL, init?: RequestInit) {
     return (nativeFetchRef.current ?? window.fetch)(input, init);
@@ -73,6 +74,8 @@ export function ConnectionExperience() {
   }
 
   function finish() {
+    if (finishScheduledRef.current) return;
+    finishScheduledRef.current = true;
     stopPolling();
     try { popupRef.current?.close(); } catch {}
     popupRef.current = null;
@@ -142,14 +145,26 @@ export function ConnectionExperience() {
   }
 
   async function startGitHub() {
+    finishScheduledRef.current = false;
     stopPolling();
+    const popup = openPopup("about:blank", "epia-github");
     setFlow({
       provider: "github",
       title: "Conectando GitHub",
       message: "Aprobá la integración en GitHub. Al reconectar reemplazamos la sesión anterior por una nueva.",
     });
+    if (!popup) {
+      setFlow((current) => current ? {
+        ...current,
+        title: "No se pudo abrir GitHub",
+        message: "El navegador bloqueó la ventana secundaria. Permití ventanas emergentes para este sitio y volvé a intentar.",
+        error: "Ventana emergente bloqueada",
+        reauthRequired: true,
+      } : current);
+      return;
+    }
     await rawFetch("/api/github/device/logout", { method: "POST" }).catch(() => undefined);
-    openPopup("/api/auth/github", "epia-github");
+    popup.location.href = "/api/auth/github";
     void pollGitHub();
   }
 
@@ -185,6 +200,7 @@ export function ConnectionExperience() {
   }
 
   async function startChatGPT() {
+    finishScheduledRef.current = false;
     stopPolling();
     setFlow({
       provider: "chatgpt",
