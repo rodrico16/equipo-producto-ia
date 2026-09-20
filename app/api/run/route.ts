@@ -85,6 +85,22 @@ function emitCodexEvent(controller: ReadableStreamDefaultController<Uint8Array>,
     return;
   }
 
+  if (type === "rollout.assignment") {
+    const assignment = asString(item.assignment).trim();
+    if (agentName && assignment) {
+      controller.enqueue(line({
+        type: "tool.started",
+        agentId: "supervisor",
+        data: {
+          toolName: "task",
+          arguments: { agent_type: agentName, prompt: assignment },
+          source: "codex-rollout-bridge",
+        },
+      }));
+    }
+    return;
+  }
+
   const looksLikeSubagent = itemType.includes("subagent") || itemType.includes("collab") || Boolean(agentName);
   if (looksLikeSubagent && agentName) {
     if (type === "item.started") {
@@ -308,7 +324,7 @@ export async function POST(request: Request) {
             cmd: "bash",
             args: [
               "-lc",
-              'mkdir -p .codex/agents; cp -n /tmp/equipo-producto-ia-agents/.codex/agents/*.toml .codex/agents/; if [ -z "$(git ls-files \'.codex/**\')" ]; then grep -qxF "/.codex/" .git/info/exclude || echo "/.codex/" >> .git/info/exclude; fi; find .codex/agents -maxdepth 1 -name "*.toml" | wc -l',
+              'mkdir -p .codex/agents; cp -n /tmp/equipo-producto-ia-agents/.codex/agents/*.toml .codex/agents/; if [ -z "$(git ls-files \' .codex/**\')" ]; then grep -qxF "/.codex/" .git/info/exclude || echo "/.codex/" >> .git/info/exclude; fi; find .codex/agents -maxdepth 1 -name "*.toml" | wc -l',
             ],
             cwd: repoDir,
           });

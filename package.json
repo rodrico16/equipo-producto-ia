@@ -9,7 +9,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "validate:runner": "node scripts/validate-runner.mjs",
-    "check": "npm run validate:runner && npm run typecheck && npm run build"
+    "validate:assignment-bridge": "node scripts/validate-codex-assignment-bridge.mjs",
+    "check": "npm run validate:runner && npm run validate:assignment-bridge && npm run typecheck && npm run build"
   },
   "engines": {
     "node": ">=24"

@@ -63,6 +63,22 @@ function emitEvent(controller: ReadableStreamDefaultController<Uint8Array>, even
     return;
   }
 
+  if (type === "rollout.assignment") {
+    const assignment = asString(item.assignment).trim();
+    if (name && assignment) {
+      controller.enqueue(line({
+        type: "tool.started",
+        agentId: "supervisor",
+        data: {
+          toolName: "task",
+          arguments: { agent_type: name, prompt: assignment },
+          source: "codex-rollout-bridge",
+        },
+      }));
+    }
+    return;
+  }
+
   const looksLikeSubagent = itemType.includes("subagent") || itemType.includes("collab") || Boolean(name);
   if (looksLikeSubagent && name) {
     if (type === "item.started") {
