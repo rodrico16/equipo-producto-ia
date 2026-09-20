@@ -231,6 +231,7 @@ async function installCodexEventBridge(sandbox: Sandbox) {
     [
       "set -euo pipefail",
       'mkdir -p "$HOME/.local/bin"',
+      'export PATH="$HOME/.local/bin:$PATH"',
       'BRIDGE="$HOME/.local/bin/codex"',
       'REAL="$HOME/.local/bin/codex-real"',
       'if [ ! -e "$REAL" ]; then CURRENT="$(command -v codex)"; if [ "$CURRENT" = "$BRIDGE" ]; then mv "$BRIDGE" "$REAL"; else ln -s "$CURRENT" "$REAL"; fi; fi',
