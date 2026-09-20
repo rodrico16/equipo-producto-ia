@@ -33,6 +33,7 @@ type ChatGPTState = {
 type AgentDefinition = { name: string; displayName: string; description: string; supervisor?: boolean };
 type GitHubRepo = { id: number; fullName: string; private: boolean; defaultBranch: string; canPush: boolean };
 type StreamEvent = { type: string; agentId?: string; data?: Record<string, unknown> };
+type ActiveRun = { controller: AbortController; reader?: ReadableStreamDefaultReader<Uint8Array> };
 
 type ChatMessage = {
   id: string;
@@ -184,12 +185,26 @@ export default function SupervisorWorkspace() {
   const selectedAgentRef = useRef("");
   const agentMaps = useRef<Record<string, Record<string, string>>>({});
   const queueLocks = useRef(new Set<string>());
+  const activeRunsRef = useRef(new Map<string, ActiveRun>());
   const endRef = useRef<HTMLDivElement>(null);
   const agentEndRef = useRef<HTMLDivElement>(null);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const settingsCloseRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => { chatsRef.current = chats; }, [chats]);
+  useEffect(() => {
+    const cancelActiveRuns = () => {
+      for (const { controller, reader } of activeRunsRef.current.values()) {
+        controller.abort();
+        void reader?.cancel();
+      }
+    };
+    window.addEventListener("pagehide", cancelActiveRuns);
+    return () => {
+      window.removeEventListener("pagehide", cancelActiveRuns);
+      cancelActiveRuns();
+    };
+  }, []);
   useEffect(() => { selectedAgentRef.current = selectedAgentName; }, [selectedAgentName]);
   useEffect(() => {
     if (!settingsOpen) return;
@@ -460,7 +475,10 @@ export default function SupervisorWorkspace() {
   async function startSupervisorRun(chatId: string, explicitPrompt?: string, alreadyAppended = false) {
     const thread = chatsRef.current.find((chat) => chat.id === chatId); if (!thread || thread.running) return;
     const prompt = (explicitPrompt ?? thread.draft).trim(); if (!prompt) return;
-    const runId = uid("run"); agentMaps.current[chatId] = { supervisor: "supervisor" };
+    const runId = uid("run");
+    const controller = new AbortController();
+    activeRunsRef.current.set(runId, { controller });
+    agentMaps.current[chatId] = { supervisor: "supervisor" };
     const history = thread.messages.filter((m) => m.kind === "user" || m.kind === "agent").slice(-12).map((m) => `${m.kind === "user" ? "USUARIO" : "SUPERVISOR"}: ${m.text}`).join("\n\n");
     const specialist = specialistContext(thread);
     const requestPrompt = [history ? `CONTEXTO DEL CHAT CON SUPERVISOR:\n${history}` : "", specialist ? `INTERVENCIONES DIRECTAS CON ESPECIALISTAS:\n${specialist}` : "", `NUEVO PEDIDO DEL USUARIO:\n${prompt}`].filter(Boolean).join("\n\n");
@@ -472,17 +490,30 @@ export default function SupervisorWorkspace() {
         : { mode: thread.mode, repo: thread.repo, branch: thread.branch, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt };
       const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "X-Run-Id": runId }, body: JSON.stringify(payload) });
       if (!response.ok || !response.body) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+      const reader = response.body.getReader();
+      activeRunsRef.current.get(runId)!.reader = reader;
+      const decoder = new TextDecoder(); let buffer = "";
       while (true) {
-        const { value, done } = await reader.read(); buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+        const { value, done } = await reader.read();
+        if (controller.signal.aborted) break;
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
         const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
-        for (const raw of lines) if (raw.trim()) handleSupervisorEvent(chatId, runId, thread.provider, thread.model, JSON.parse(raw) as StreamEvent);
-        if (done) break;
+        for (const raw of lines) {
+          if (controller.signal.aborted) break;
+          if (raw.trim()) handleSupervisorEvent(chatId, runId, thread.provider, thread.model, JSON.parse(raw) as StreamEvent);
+        }
+        if (done || controller.signal.aborted) break;
       }
-      if (buffer.trim()) handleSupervisorEvent(chatId, runId, thread.provider, thread.model, JSON.parse(buffer) as StreamEvent);
+      if (!controller.signal.aborted && buffer.trim()) handleSupervisorEvent(chatId, runId, thread.provider, thread.model, JSON.parse(buffer) as StreamEvent);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error); updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Turno detenido", error: message, updatedAt: Date.now() })); system(chatId, message, "bad");
-    } finally { updateChat(chatId, (chat) => chat.running ? { ...chat, running: false, updatedAt: Date.now() } : chat); }
+      const interrupted = controller.signal.aborted;
+      const message = interrupted ? "La ejecución fue interrumpida." : error instanceof Error ? error.message : String(error);
+      updateChat(chatId, (chat) => ({ ...chat, running: false, status: interrupted ? "Turno interrumpido" : "Turno detenido", error: message, updatedAt: Date.now() }));
+      system(chatId, message, "bad");
+    } finally {
+      activeRunsRef.current.delete(runId);
+      updateChat(chatId, (chat) => chat.running ? { ...chat, running: false, updatedAt: Date.now() } : chat);
+    }
   }
 
   function sendSupervisor() {
@@ -499,25 +530,41 @@ export default function SupervisorWorkspace() {
     const parent = chatsRef.current.find((chat) => chat.id === chatId); const thread = parent?.agentThreads[name];
     if (!parent || !thread || thread.status === "running" || !thread.draft.trim()) return;
     const prompt = thread.draft.trim(); const runId = uid("agent-run");
+    const controller = new AbortController();
+    activeRunsRef.current.set(runId, { controller });
     const supervisorContext = parent.messages.filter((m) => m.kind === "user" || m.kind === "agent").slice(-8).map((m) => `${m.kind === "user" ? "USUARIO" : "SUPERVISOR"}: ${m.text}`).join("\n\n");
     const directHistory = thread.messages.filter((m) => m.kind === "user" || m.kind === "agent").slice(-10).map((m) => `${m.kind === "user" ? "USUARIO" : thread.displayName}: ${m.text}`).join("\n\n");
     const requestPrompt = [supervisorContext ? `CONTEXTO DEL SUPERVISOR:\n${supervisorContext}` : "", directHistory ? `HISTORIAL DE ESTE HILO:\n${directHistory}` : "", `NUEVO AJUSTE DEL USUARIO:\n${prompt}`].filter(Boolean).join("\n\n");
     updateAgentThread(chatId, name, (current) => ({ ...current, draft: "", status: "running", error: "", unread: 0, messages: [...current.messages, { id: `${runId}:user`, kind: "user", text: prompt, at: Date.now() } as ChatMessage].slice(-140), updatedAt: Date.now() }));
     try {
-      const response = await fetch("/api/agent-run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: parent.provider, agentName: name, prompt: requestPrompt, repo: parent.repo, branch: parent.branch, model: parent.model, reasoningEffort: parent.reasoningEffort }) });
+      const response = await fetch("/api/agent-run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: parent.provider, agentName: name, prompt: requestPrompt, repo: parent.repo, branch: parent.branch, model: parent.model, reasoningEffort: parent.reasoningEffort }), signal: controller.signal });
       if (!response.ok || !response.body) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+      const reader = response.body.getReader();
+      activeRunsRef.current.get(runId)!.reader = reader;
+      const decoder = new TextDecoder(); let buffer = "";
       while (true) {
-        const { value, done } = await reader.read(); buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+        const { value, done } = await reader.read();
+        if (controller.signal.aborted) break;
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
         const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
-        for (const raw of lines) if (raw.trim()) handleAgentEvent(chatId, name, runId, JSON.parse(raw) as StreamEvent);
-        if (done) break;
+        for (const raw of lines) {
+          if (controller.signal.aborted) break;
+          if (raw.trim()) handleAgentEvent(chatId, name, runId, JSON.parse(raw) as StreamEvent);
+        }
+        if (done || controller.signal.aborted) break;
       }
-      if (buffer.trim()) handleAgentEvent(chatId, name, runId, JSON.parse(buffer) as StreamEvent);
-      updateAgentThread(chatId, name, (current) => current.status === "running" ? { ...current, status: "completed", updatedAt: Date.now() } : current);
-      system(chatId, `Intervención con ${displayName(name)} actualizada · Supervisor la incorpora en el próximo turno`, "good");
+      if (!controller.signal.aborted && buffer.trim()) handleAgentEvent(chatId, name, runId, JSON.parse(buffer) as StreamEvent);
+      if (!controller.signal.aborted) {
+        updateAgentThread(chatId, name, (current) => current.status === "running" ? { ...current, status: "completed", updatedAt: Date.now() } : current);
+        system(chatId, `Intervención con ${displayName(name)} actualizada · Supervisor la incorpora en el próximo turno`, "good");
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error); updateAgentThread(chatId, name, (current) => ({ ...current, status: "error", error: message, updatedAt: Date.now() })); appendAgent(chatId, name, { id: uid("agent-error"), kind: "system", text: message, tone: "bad", at: Date.now() }, true);
+      const interrupted = controller.signal.aborted;
+      const message = interrupted ? "La ejecución fue interrumpida." : error instanceof Error ? error.message : String(error);
+      updateAgentThread(chatId, name, (current) => ({ ...current, status: "error", error: message, updatedAt: Date.now() }));
+      appendAgent(chatId, name, { id: uid("agent-error"), kind: "system", text: message, tone: "bad", at: Date.now() }, true);
+    } finally {
+      activeRunsRef.current.delete(runId);
     }
   }
 
