@@ -19,6 +19,7 @@ const nativeStarted = new Set();
 const nativeCompleted = new Set();
 const bridged = new Map();
 const scheduled = new Map();
+const assignmentEmitted = new Set();
 let stdoutBuffer = "";
 let scanBusy = false;
 let closing = false;
@@ -38,6 +39,10 @@ function parseMaybeJson(value) {
 function agentName(value) {
   const source = record(parseMaybeJson(value));
   return text(source.agent_type) || text(source.agentType) || text(source.agent_name) || text(source.agentName) || text(source.agent) || text(source.role);
+}
+function assignmentText(value) {
+  const source = record(parseMaybeJson(value));
+  return text(source.prompt) || text(source.task) || text(source.message) || text(source.description) || text(source.instruction) || text(source.instructions) || text(source.objective);
 }
 function nativeLifecycle(line) {
   let event;
@@ -59,6 +64,24 @@ function emitLifecycle(type, name, callId) {
       type: "subagent",
       agentName: name,
       agent_id: id,
+      source: "codex-rollout-bridge",
+    },
+  }) + "\n");
+}
+function emitAssignment(name, callId, assignment) {
+  const clean = text(assignment).trim();
+  const key = String(callId || name) + ":" + name;
+  if (!clean || assignmentEmitted.has(key)) return;
+  assignmentEmitted.add(key);
+  const id = "rollout-assignment-" + String(callId || name || Date.now());
+  process.stdout.write(JSON.stringify({
+    type: "rollout.assignment",
+    item: {
+      id,
+      type: "agent_assignment",
+      agentName: name,
+      agent_id: id,
+      assignment: clean,
       source: "codex-rollout-bridge",
     },
   }) + "\n");
@@ -91,7 +114,8 @@ function extractSpawn(event) {
   return requests.map((request, index) => {
     const source = record(parseMaybeJson(request));
     const name = agentName(source) || text(source.task_name) || text(source.taskName) || ("especialista_" + callId.slice(-8) + (requests.length > 1 ? "_" + (index + 1) : ""));
-    return { name, callId: requests.length > 1 ? callId + "-" + index : callId };
+    const assignment = assignmentText(source) || assignmentText(argsRecord);
+    return { name, assignment, callId: requests.length > 1 ? callId + "-" + index : callId };
   });
 }
 async function listJsonl(dir, out = []) {
@@ -124,7 +148,10 @@ async function consumeFile(file) {
       if (!line.trim()) continue;
       let event;
       try { event = JSON.parse(line); } catch { continue; }
-      for (const spawnEvent of extractSpawn(event)) scheduleStart(spawnEvent.name, spawnEvent.callId);
+      for (const spawnEvent of extractSpawn(event)) {
+        emitAssignment(spawnEvent.name, spawnEvent.callId, spawnEvent.assignment);
+        scheduleStart(spawnEvent.name, spawnEvent.callId);
+      }
     }
   } finally {
     await handle?.close().catch(() => undefined);
