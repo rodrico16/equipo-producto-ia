@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { ConnectionExperience } from "@/components/connection-experience";
 import "./globals.css";
 import "./provider.css";
+import "./agent-mobile-ux.css";
 
 export const metadata: Metadata = {
   title: "AI Product Team · Control Room",
