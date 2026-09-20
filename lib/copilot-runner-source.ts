@@ -19,8 +19,6 @@ const turnTimeoutMs = Number.isFinite(requestedTurnTimeout)
 if (!rawToken) throw new Error("Missing COPILOT_GITHUB_TOKEN");
 if (!task.trim()) throw new Error("Missing COPILOT_TASK");
 
-// Keep the credential in memory only. Tool subprocesses inherit process.env,
-// so remove it before the Copilot runtime (and its bash tool) starts.
 const githubToken = rawToken;
 delete process.env.COPILOT_GITHUB_TOKEN;
 
@@ -36,6 +34,73 @@ function valueOf(source, key) {
 function multilineOf(source, key) {
   const match = source.match(new RegExp(key + "\\s*=\\s*'''([\\s\\S]*?)'''", "m"));
   return match?.[1]?.trim() || "";
+}
+
+function parseMaybeJson(value) {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) return value;
+  try { return JSON.parse(trimmed); } catch { return value; }
+}
+
+function walk(value, visit, depth = 0) {
+  if (depth > 6 || value == null) return;
+  const parsed = parseMaybeJson(value);
+  if (parsed !== value) return walk(parsed, visit, depth + 1);
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) walk(item, visit, depth + 1);
+    return;
+  }
+  if (typeof parsed === "object") {
+    for (const [key, child] of Object.entries(parsed)) {
+      visit(key, child);
+      walk(child, visit, depth + 1);
+    }
+  }
+}
+
+function isTaskTool(toolName) {
+  const normalized = String(toolName || "").toLowerCase().replace(/[.:-]/g, "_");
+  return normalized === "task" || normalized.endsWith("_task") || normalized.includes("start_agent") || normalized.includes("tasks_start");
+}
+
+function taskDelegation(toolName, rawArguments, toolCallId, knownAgents) {
+  if (!isTaskTool(toolName)) return null;
+
+  const names = new Set(["agent_type", "agenttype", "agent_name", "agentname", "agent"]);
+  const assignmentKeys = new Set(["prompt", "task", "message", "description", "instructions", "objective"]);
+  let agentName = "";
+  let assignment = "";
+
+  walk(rawArguments, (key, value) => {
+    const normalized = String(key || "").toLowerCase().replace(/[^a-z0-9_]/g, "");
+    if (!agentName && names.has(normalized) && typeof value === "string") agentName = value.trim();
+    if (!assignment && assignmentKeys.has(normalized) && typeof value === "string") assignment = value.trim();
+  });
+
+  let serialized = "";
+  try { serialized = JSON.stringify(rawArguments ?? {}); } catch { serialized = String(rawArguments ?? ""); }
+  const haystack = serialized.toLowerCase();
+
+  if (!agentName) {
+    const match = knownAgents.find((agent) => {
+      const name = String(agent.name || "").toLowerCase();
+      const display = String(agent.displayName || "").toLowerCase();
+      return (name && haystack.includes(name)) || (display && haystack.includes(display));
+    });
+    if (match) agentName = match.name;
+  }
+
+  if (!assignment && typeof rawArguments === "string") assignment = rawArguments.trim();
+  if (!assignment && serialized && serialized !== "{}") assignment = serialized.slice(0, 1200);
+
+  const provisional = !agentName;
+  if (!agentName) agentName = "especialista_pendiente_" + String(toolCallId || Date.now()).slice(-8);
+  return {
+    agentName,
+    assignment: assignment || "Delegación iniciada por Supervisor",
+    provisional,
+  };
 }
 
 async function loadAgents() {
@@ -70,9 +135,6 @@ await mkdir(copilotHome, { recursive: true });
 const { agents, supervisorPrompt } = await loadAgents();
 emit("team.loaded", { count: agents.length + 1, model, reasoningEffort, mode: runMode });
 
-// Empty mode deliberately disables ambient CLI state. Give every ephemeral
-// Vercel worker its own COPILOT_HOME so session state never leaks across runs
-// and never touches the target repository.
 const client = new CopilotClient({
   useLoggedInUser: false,
   mode: "empty",
@@ -86,10 +148,6 @@ try {
   emit("runtime.stage", { stage: "client.start", message: "Iniciando runtime de Copilot…" });
   await client.start();
 
-  // In empty mode Copilot exposes no tools unless the session opts in.
-  // Conversation-only chats get the SDK's session-isolated collaboration tools.
-  // Repository modes additionally get only the local coding tools needed to
-  // inspect, edit and verify files inside the already-isolated Vercel Sandbox.
   const availableTools = new ToolSet().addBuiltIn(BuiltInTools.Isolated);
   if (runMode !== "chat") {
     availableTools.addBuiltIn(["bash", "view", "edit", "create_file", "grep", "glob"]);
@@ -130,10 +188,33 @@ try {
       return;
     }
     if (event.type === "tool.execution_start") {
+      const delegation = taskDelegation(event.data.toolName, event.data.arguments, event.data.toolCallId, agents);
+      if (delegation) {
+        const configured = agents.find((agent) => agent.name === delegation.agentName);
+        emit("specialist.assigned", {
+          toolCallId: event.data.toolCallId,
+          agentName: delegation.agentName,
+          agentDisplayName: configured?.displayName || (delegation.provisional ? "Especialista…" : delegation.agentName),
+          agentDescription: configured?.description || "Especialista delegado por Supervisor",
+          assignment: delegation.assignment,
+          provisional: delegation.provisional,
+        }, delegation.agentName);
+        emit("subagent.started", {
+          toolCallId: event.data.toolCallId,
+          agentName: delegation.agentName,
+          agentDisplayName: configured?.displayName || (delegation.provisional ? "Especialista…" : delegation.agentName),
+          agentDescription: configured?.description || "Especialista delegado por Supervisor",
+          assignment: delegation.assignment,
+          synthetic: true,
+          provisional: delegation.provisional,
+        }, delegation.agentName);
+      }
       emit("tool.started", {
         toolCallId: event.data.toolCallId,
         toolName: event.data.toolName,
-        arguments: event.data.arguments,
+        arguments: delegation
+          ? { agent_type: delegation.agentName, prompt: delegation.assignment, provisional: delegation.provisional }
+          : event.data.arguments,
       }, agentId || "supervisor");
       return;
     }
