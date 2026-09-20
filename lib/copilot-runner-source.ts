@@ -95,7 +95,7 @@ function taskDelegation(toolName, rawArguments, toolCallId, knownAgents) {
   if (!assignment && serialized && serialized !== "{}") assignment = serialized.slice(0, 1200);
 
   const provisional = !agentName;
-  if (!agentName) agentName = `especialista_pendiente_${String(toolCallId || Date.now()).slice(-8)}`;
+  if (!agentName) agentName = "especialista_pendiente_" + String(toolCallId || Date.now()).slice(-8);
   return {
     agentName,
     assignment: assignment || "Delegación iniciada por Supervisor",
@@ -199,8 +199,6 @@ try {
           assignment: delegation.assignment,
           provisional: delegation.provisional,
         }, delegation.agentName);
-        // Keep compatibility with the current UI, which already opens a thread
-        // for subagent.started. This event is guaranteed for every task call.
         emit("subagent.started", {
           toolCallId: event.data.toolCallId,
           agentName: delegation.agentName,
