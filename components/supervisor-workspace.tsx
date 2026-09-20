@@ -36,13 +36,14 @@ type StreamEvent = { type: string; agentId?: string; data?: Record<string, unkno
 
 type ChatMessage = {
   id: string;
-  kind: "user" | "agent" | "system";
+  kind: "user" | "agent" | "system" | "pr";
   text: string;
   at: number;
   agent?: string;
   displayName?: string;
   streaming?: boolean;
   tone?: "neutral" | "good" | "bad";
+  pullRequest?: PullRequestRecord;
 };
 
 type AgentThread = {
@@ -153,6 +154,9 @@ function normalizeChat(input: Partial<ChatThread>): ChatThread {
   }
   const legacyPr = input.prUrl ? [{ url: input.prUrl, diffStat: input.diffStat || undefined, at: input.updatedAt || Date.now() }] : [];
   const pullRequests = [...(input.pullRequests || []), ...legacyPr].filter((pr, index, all) => pr?.url && all.findIndex((item) => item.url === pr.url) === index).slice(-30);
+  const knownPrs = new Set(supervisorMessages.filter((message) => message.kind === "pr" && message.pullRequest?.url).map((message) => message.pullRequest!.url));
+  for (const pr of pullRequests) if (!knownPrs.has(pr.url)) supervisorMessages.push({ id: `pr:${pr.url}`, kind: "pr", text: "Pull Request creado", at: pr.at, agent: "supervisor", displayName: "Supervisor", pullRequest: pr });
+  supervisorMessages.sort((a, b) => a.at - b.at);
   return { ...base, running: false, messages: supervisorMessages.slice(-200), agentThreads: threads, queuedSupervisor: input.queuedSupervisor || [], pullRequests };
 }
 
@@ -172,6 +176,7 @@ export default function SupervisorWorkspace() {
   const [mobileAgentsOpen, setMobileAgentsOpen] = useState(false);
   const [selectedAgentName, setSelectedAgentName] = useState("");
   const [connectionError, setConnectionError] = useState("");
+  const [prQuickOpen, setPrQuickOpen] = useState(false);
 
   const chatsRef = useRef<ChatThread[]>([]);
   const selectedAgentRef = useRef("");
@@ -281,7 +286,7 @@ export default function SupervisorWorkspace() {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [active?.messages.length, active?.id]);
   useEffect(() => { agentEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [selectedAgentThread?.messages.length, selectedAgentName]);
-  useEffect(() => { setSelectedAgentName(""); setMobileAgentsOpen(false); }, [activeId]);
+  useEffect(() => { setSelectedAgentName(""); setMobileAgentsOpen(false); setPrQuickOpen(false); }, [activeId]);
 
   useEffect(() => {
     for (const chat of chats) {
@@ -329,7 +334,13 @@ export default function SupervisorWorkspace() {
   function upsertPullRequest(chatId: string, data: Record<string, unknown>) {
     const url = asString(data.prUrl).trim(); if (!url) return;
     const record: PullRequestRecord = { url, repo: asString(data.repo) || undefined, branch: asString(data.branch) || undefined, number: typeof data.prNumber === "number" ? data.prNumber : undefined, diffStat: asString(data.diffStat) || undefined, at: Date.now() };
-    updateChat(chatId, (chat) => ({ ...chat, prUrl: url, pullRequests: [...chat.pullRequests.filter((item) => item.url !== url), record].slice(-30), updatedAt: Date.now() }));
+    updateChat(chatId, (chat) => {
+      const pullRequests = [...chat.pullRequests.filter((item) => item.url !== url), record].slice(-30);
+      const messages = chat.messages.some((message) => message.kind === "pr" && message.pullRequest?.url === url)
+        ? chat.messages.map((message) => message.kind === "pr" && message.pullRequest?.url === url ? { ...message, pullRequest: record, at: record.at } : message)
+        : [...chat.messages, { id: `pr:${url}`, kind: "pr", text: "Pull Request creado", at: record.at, agent: "supervisor", displayName: "Supervisor", pullRequest: record } as ChatMessage];
+      return { ...chat, prUrl: url, pullRequests, messages: messages.sort((a, b) => a.at - b.at).slice(-220), updatedAt: Date.now() };
+    });
   }
 
   function taskAssignment(data: Record<string, unknown>) {
@@ -510,8 +521,8 @@ export default function SupervisorWorkspace() {
 
       <section className={s.supervisorPane}>
         <header className={s.chatHeader}><button aria-label="Volver a chats" className={s.mobileBack} onClick={() => setMobileListOpen(true)}>‹</button><span className={s.supervisorAvatar}>S</span><div className={s.headerCopy}><strong>Supervisor</strong><span>{active.title} · {active.running ? active.status : "listo"}</span></div><button aria-label="Abrir chats de agentes" className={s.agentToggle} onClick={() => setMobileAgentsOpen(true)}>{parallelThreads.length ? `${parallelThreads.length} agentes` : "Agentes"}</button><button ref={settingsTriggerRef} aria-label="Abrir configuración" aria-expanded={settingsOpen} aria-controls="supervisor-settings" className={s.iconButton} onClick={() => setSettingsOpen(true)}>⚙</button></header>
-        <div className={s.contextBar}><span>{modeLabel(active.mode)}</span><span>{active.provider === "copilot" ? "Copilot" : "ChatGPT"} · {selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</span>{active.repo && <span>repo · {active.repo}</span>}{active.queuedSupervisor.length > 0 && <span className={s.queueChip}>{active.queuedSupervisor.length} en cola</span>}</div>
-        <div className={s.messages}><div className={s.stack}>{active.messages.length === 0 && <div className={s.welcome}><div className={s.welcomeAvatar}>S</div><h1>Hablá con Supervisor</h1><p>Supervisor coordina el equipo. Los especialistas aparecen a la derecha como chats paralelos.</p></div>}{active.messages.map((message) => message.kind === "system" ? <div key={message.id} className={`${s.system} ${message.tone === "good" ? s.systemGood : message.tone === "bad" ? s.systemBad : ""}`}>{message.text}</div> : message.kind === "user" ? <div className={`${s.row} ${s.userRow}`} key={message.id}><article className={`${s.bubble} ${s.userBubble}`}><div>{message.text}</div><time>{time(message.at)}</time></article></div> : <div className={`${s.row} ${s.agentRow}`} key={message.id}><span className={s.messageAvatar}>S</span><article className={`${s.bubble} ${s.agentBubble}`}><div className={s.author}><strong>Supervisor</strong></div><div className={s.aiResponse}><MessageResponse>{message.text}</MessageResponse></div><time>{time(message.at)}</time></article></div>)}{(active.pullRequests.length > 0 || active.diffStat) && <div className={s.delivery}><strong>{active.pullRequests.length > 0 ? "Pull Requests del chat" : "Cambios preparados"}</strong>{active.pullRequests.length > 0 && <div className={s.prList}>{active.pullRequests.slice().reverse().map((pr) => <div className={s.prItem} key={pr.url}><a href={pr.url} target="_blank" rel="noreferrer">{pr.repo || pr.url} {pr.number ? `#${pr.number}` : "↗"}</a>{pr.branch && <small>{pr.branch}</small>}{pr.diffStat && <pre>{pr.diffStat}</pre>}</div>)}</div>}{active.pullRequests.length === 0 && active.diffStat && <pre>{active.diffStat}</pre>}</div>}<div ref={endRef} /></div></div>
+        <div className={s.contextBar}><span>{modeLabel(active.mode)}</span><span>{active.provider === "copilot" ? "Copilot" : "ChatGPT"} · {selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</span>{active.repo && <span>repo · {active.repo}</span>}{active.queuedSupervisor.length > 0 && <span className={s.queueChip}>{active.queuedSupervisor.length} en cola</span>}{active.pullRequests.length > 0 && <button type="button" className={s.prQuickButton} aria-label={`Abrir lista de ${active.pullRequests.length} Pull Requests`} aria-expanded={prQuickOpen} onClick={() => setPrQuickOpen((open) => !open)}>PRs · {active.pullRequests.length}</button>}</div>
+        <div className={s.messages}><div className={s.stack}>{prQuickOpen && active.pullRequests.length > 0 && <section className={s.prQuickList} aria-label="Lista rápida de Pull Requests"><div className={s.prQuickHeader}><strong>Pull Requests del chat</strong><button type="button" aria-label="Cerrar lista de Pull Requests" onClick={() => setPrQuickOpen(false)}>×</button></div>{active.pullRequests.slice().reverse().map((pr) => <a className={s.prQuickItem} key={pr.url} href={pr.url} target="_blank" rel="noreferrer"><span>{pr.repo || pr.url} {pr.number ? `#${pr.number}` : "↗"}</span><small>{pr.branch || "Abrir en GitHub"}</small></a>)}</section>}{active.messages.length === 0 && <div className={s.welcome}><div className={s.welcomeAvatar}>S</div><h1>Hablá con Supervisor</h1><p>Supervisor coordina el equipo. Los especialistas aparecen a la derecha como chats paralelos.</p></div>}{active.messages.map((message) => message.kind === "system" ? <div key={message.id} className={`${s.system} ${message.tone === "good" ? s.systemGood : message.tone === "bad" ? s.systemBad : ""}`}>{message.text}</div> : message.kind === "user" ? <div className={`${s.row} ${s.userRow}`} key={message.id}><article className={`${s.bubble} ${s.userBubble}`}><div>{message.text}</div><time>{time(message.at)}</time></article></div> : message.kind === "pr" && message.pullRequest ? <div className={`${s.row} ${s.agentRow}`} key={message.id}><span className={s.messageAvatar}>S</span><article className={`${s.bubble} ${s.agentBubble} ${s.prMessage}`}><div className={s.author}><strong>Supervisor</strong><span>Pull Request</span></div><div>{message.text}</div><a href={message.pullRequest.url} target="_blank" rel="noreferrer">{message.pullRequest.repo || message.pullRequest.url} {message.pullRequest.number ? `#${message.pullRequest.number}` : "↗"}</a>{message.pullRequest.branch && <small>{message.pullRequest.branch}</small>}{message.pullRequest.diffStat && <pre>{message.pullRequest.diffStat}</pre>}<time>{time(message.at)}</time></article></div> : <div className={`${s.row} ${s.agentRow}`} key={message.id}><span className={s.messageAvatar}>S</span><article className={`${s.bubble} ${s.agentBubble}`}><div className={s.author}><strong>Supervisor</strong></div><div className={s.aiResponse}><MessageResponse>{message.text}</MessageResponse></div><time>{time(message.at)}</time></article></div>)}{active.pullRequests.length === 0 && active.diffStat && <div className={s.delivery}><strong>Cambios preparados</strong><pre>{active.diffStat}</pre></div>}<div ref={endRef} /></div></div>
         <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>Ocurrió un error:</strong> {active.error} <span>Tu contexto y borrador se conservaron; podés reintentar.</span></div>}<div className={s.composer}><button aria-label="Abrir configuración" className={s.plus} onClick={() => setSettingsOpen(true)}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby="supervisor-send-hint" value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Escribí otra instrucción; queda en cola…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button>{sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</div></footer>
       </section>
 
