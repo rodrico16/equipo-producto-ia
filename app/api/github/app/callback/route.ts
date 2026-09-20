@@ -1,4 +1,4 @@
-import { readGitHubAppConfig } from "@/lib/github-app-auth";
+import { consumeManifestState, readGitHubAppConfig } from "@/lib/github-app-auth";
 import { writeGitHubDeviceSession } from "@/lib/github-device-auth";
 
 export const runtime = "nodejs";
@@ -12,8 +12,9 @@ function donePage(origin: string, login: string) {
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
   const config = await readGitHubAppConfig();
-  if (!code || !config) {
+  if (!code || !config || !(await consumeManifestState(state))) {
     return Response.redirect(new URL("/?github=oauth-missing", request.url), 302);
   }
 
@@ -27,6 +28,7 @@ export async function GET(request: Request) {
       client_id: config.clientId,
       client_secret: config.clientSecret,
       code,
+      redirect_uri: `${url.origin}/api/github/app/callback`,
     }),
     cache: "no-store",
   });
