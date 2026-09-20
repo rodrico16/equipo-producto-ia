@@ -8,6 +8,7 @@ const model = process.env.COPILOT_MODEL || "auto";
 const reasoningEffort = process.env.COPILOT_REASONING_EFFORT || "";
 const task = process.env.COPILOT_TASK || "";
 const runMode = process.env.COPILOT_MODE || "pr";
+if (!["chat", "draft", "pr"].includes(runMode)) throw new Error("Unsupported Copilot run mode");
 const workdir = process.env.COPILOT_WORKDIR || process.cwd();
 const agentDir = process.env.COPILOT_AGENT_DIR || path.join(workdir, ".codex", "agents");
 const copilotHome = path.join("/tmp", "copilot-home-" + process.pid);

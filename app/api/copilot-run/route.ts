@@ -32,7 +32,11 @@ function asString(value: unknown) {
 
 export async function POST(request: Request) {
   const body = (await request.json()) as RunRequest;
-  const mode: RunMode = body.mode === "draft" ? "draft" : "chat";
+  const requestedMode = body.mode;
+  if (requestedMode !== undefined && requestedMode !== "chat" && requestedMode !== "draft") {
+    return Response.json({ error: "Unsupported run mode" }, { status: 400 });
+  }
+  const mode: RunMode = requestedMode ?? "chat";
   const prompt = body.prompt?.trim();
   const model = body.model?.trim() || "auto";
   const reasoningEffort = body.reasoningEffort?.trim() || "";

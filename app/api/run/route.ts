@@ -15,6 +15,7 @@ type RunRequest = {
   model?: string;
   reasoningEffort?: string;
   prompt?: string;
+  publicationMode?: "pr";
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -160,24 +161,6 @@ function githubHeaders(token?: string) {
   };
 }
 
-function extractOriginalRequest(prompt: string) {
-  const marker = "NUEVO PEDIDO DEL USUARIO:";
-  const markerIndex = prompt.lastIndexOf(marker);
-  return (markerIndex >= 0 ? prompt.slice(markerIndex + marker.length) : prompt).trim();
-}
-
-function extractPromptSection(prompt: string, labels: string[]) {
-  const labelPattern = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const heading = new RegExp(`(?:^|\\n)\\s*(?:${labelPattern})\\s*:?\\s*\\n?`, "i");
-  const match = heading.exec(prompt);
-  if (!match || match.index < 0) return "No especificado en el pedido.";
-  const contentStart = match.index + match[0].length;
-  const nextHeading = /\n\s*[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ _-]{2,}:?\s*(?:\n|$)/g;
-  nextHeading.lastIndex = contentStart;
-  const next = nextHeading.exec(prompt);
-  return (prompt.slice(contentStart, next?.index ?? prompt.length).trim() || "No especificado en el pedido.");
-}
-
 function parseDiffMetrics(numstat: string) {
   let files = 0;
   let additions = 0;
@@ -199,6 +182,11 @@ export async function POST(request: Request) {
   const provider = body.provider === "chatgpt" ? "chatgpt" : "copilot";
   const model = body.model?.trim() || "auto";
   const reasoningEffort = body.reasoningEffort?.trim();
+  const publicationMode = body.publicationMode;
+
+  if (publicationMode !== undefined && publicationMode !== "pr") {
+    return Response.json({ error: "Unsupported publication mode" }, { status: 400 });
+  }
 
   if (!repoPattern.test(repo)) {
     return Response.json({ error: "Repository must be owner/name" }, { status: 400 });
@@ -382,7 +370,7 @@ export async function POST(request: Request) {
             `USER OBJECTIVE:\n${prompt}`,
           ].join("\n");
 
-          const args = ["--sandbox", "danger-full-access", "--ask-for-approval", "never"];
+          const args = ["--sandbox", "workspace-write", "--ask-for-approval", "never"];
           if (model && model !== "auto") args.push("--model", model);
           if (reasoningEffort) {
             args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
@@ -559,7 +547,7 @@ export async function POST(request: Request) {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            title: `AI Control Room: ${prompt.slice(0, 72)}`,
+            title: "AI Control Room: cambios listos para revisión",
             head: runBranch,
             base: baseBranch,
             body: [
@@ -567,17 +555,7 @@ export async function POST(request: Request) {
               "",
               `Cambio implementado por el supervisor y los agentes especializados usando **${provider === "chatgpt" ? "ChatGPT / Codex" : "GitHub Copilot"}** dentro de Vercel Sandbox.`,
               "",
-              "### Pedido de usuario original",
-              extractOriginalRequest(prompt),
-              "",
-              "### Entendimiento del equipo",
-              extractPromptSection(prompt, ["ENTENDIMIENTO DEL EQUIPO", "ENTENDIMIENTO"]),
-              "",
-              "### Entregables",
-              extractPromptSection(prompt, ["ENTREGABLES", "ENTREGABLE"]),
-              "",
-              "### Criterios de aceptación",
-              extractPromptSection(prompt, ["CRITERIOS DE ACEPTACIÓN", "CRITERIOS DE ACEPTACION", "CRITERIOS"]),
+              "El pedido original se omitió por privacidad; revisar el diff y los checks antes de mergear.",
               "",
               "### Cambios medidos",
               `- Archivos modificados: ${diffMetrics.files}`,
