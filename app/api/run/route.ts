@@ -159,6 +159,38 @@ function githubHeaders(token?: string) {
   };
 }
 
+function extractOriginalRequest(prompt: string) {
+  const marker = "NUEVO PEDIDO DEL USUARIO:";
+  const markerIndex = prompt.lastIndexOf(marker);
+  return (markerIndex >= 0 ? prompt.slice(markerIndex + marker.length) : prompt).trim();
+}
+
+function extractPromptSection(prompt: string, labels: string[]) {
+  const labelPattern = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const heading = new RegExp(`(?:^|\\n)\\s*(?:${labelPattern})\\s*:?\\s*\\n?`, "i");
+  const match = heading.exec(prompt);
+  if (!match || match.index < 0) return "No especificado en el pedido.";
+  const contentStart = match.index + match[0].length;
+  const nextHeading = /\n\s*[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ _-]{2,}:?\s*(?:\n|$)/g;
+  nextHeading.lastIndex = contentStart;
+  const next = nextHeading.exec(prompt);
+  return (prompt.slice(contentStart, next?.index ?? prompt.length).trim() || "No especificado en el pedido.");
+}
+
+function parseDiffMetrics(numstat: string) {
+  let files = 0;
+  let additions = 0;
+  let deletions = 0;
+  let binaryFiles = 0;
+  for (const row of numstat.split("\n").map((value) => value.trim()).filter(Boolean)) {
+    const [added, removed] = row.split("\t");
+    files += 1;
+    if (added === "-" || removed === "-") binaryFiles += 1;
+    else { additions += Number(added) || 0; deletions += Number(removed) || 0; }
+  }
+  return { files, additions, deletions, binaryFiles };
+}
+
 export async function POST(request: Request) {
   const body = (await request.json()) as RunRequest;
   const repo = body.repo?.trim() || "rodrico16/equipo-producto-ia";
@@ -481,6 +513,9 @@ export async function POST(request: Request) {
         });
         const diffStat = (await diffStatResult.stdout()).trim();
         const changed = (await diffNamesResult.stdout()).trim();
+        const diffNumstatResult = await sandbox.runCommand({ cmd: "git", args: ["diff", "--numstat", `${baseSha}..HEAD`], cwd: repoDir });
+        if (diffNumstatResult.exitCode !== 0) throw new Error(`Could not calculate diff metrics: ${(await diffNumstatResult.stderr()).slice(-800)}`);
+        const diffMetrics = parseDiffMetrics((await diffNumstatResult.stdout()).trim());
         controller.enqueue(line({ type: "workspace.diff", data: { changed, diffStat } }));
 
         if (!github) {
@@ -525,9 +560,24 @@ export async function POST(request: Request) {
               "",
               `Cambio implementado por el supervisor y los agentes especializados usando **${provider === "chatgpt" ? "ChatGPT / Codex" : "GitHub Copilot"}** dentro de Vercel Sandbox.`,
               "",
-              `**Solicitud:** ${prompt}`,
+              "### Pedido de usuario original",
+              extractOriginalRequest(prompt),
               "",
-              diffStat ? `**Diff:**\n\`\`\`\n${diffStat}\n\`\`\`` : "",
+              "### Entendimiento del equipo",
+              extractPromptSection(prompt, ["ENTENDIMIENTO DEL EQUIPO", "ENTENDIMIENTO"]),
+              "",
+              "### Entregables",
+              extractPromptSection(prompt, ["ENTREGABLES", "ENTREGABLE"]),
+              "",
+              "### Criterios de aceptación",
+              extractPromptSection(prompt, ["CRITERIOS DE ACEPTACIÓN", "CRITERIOS DE ACEPTACION", "CRITERIOS"]),
+              "",
+              "### Cambios medidos",
+              `- Archivos modificados: ${diffMetrics.files}`,
+              `- Líneas agregadas: ${diffMetrics.additions}`,
+              `- Líneas eliminadas: ${diffMetrics.deletions}`,
+              diffMetrics.binaryFiles ? `- Archivos binarios (líneas no aplicables): ${diffMetrics.binaryFiles}` : "",
+              diffStat ? `\n**Diff:**\n\`\`\`\n${diffStat}\n\`\`\`` : "",
               "",
               "Revisar los checks y el diff antes de mergear.",
             ].join("\n"),
