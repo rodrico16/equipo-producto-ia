@@ -2,6 +2,7 @@ import { Sandbox } from "@vercel/sandbox";
 import { readCodexAuth } from "@/lib/chatgpt-auth-cookie";
 import { createChatGPTWorkerSandbox } from "@/lib/chatgpt-sandbox";
 import { copilotRunnerSource } from "@/lib/copilot-runner-source";
+import { presentRuntimeError } from "@/lib/runtime-error";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 import { finishRun, getRun, startRun } from "@/lib/run-store";
 
@@ -447,6 +448,7 @@ export async function POST(request: Request) {
           });
 
           let pending = "";
+          let runtimeFailure = "";
           for await (const log of command.logs()) {
             pending += log.data;
             const parts = pending.split("\n");
@@ -454,7 +456,9 @@ export async function POST(request: Request) {
             for (const part of parts) {
               if (!part.trim()) continue;
               try {
-                controller.enqueue(line(JSON.parse(part)));
+                const event = JSON.parse(part) as { type?: string; data?: { message?: unknown } };
+                if (event.type === "run.failed" && typeof event.data?.message === "string") runtimeFailure = event.data.message;
+                controller.enqueue(line(event));
               } catch {
                 controller.enqueue(line({ type: "runtime.log", data: { message: part } }));
               }
@@ -462,13 +466,15 @@ export async function POST(request: Request) {
           }
           if (pending.trim()) {
             try {
-              controller.enqueue(line(JSON.parse(pending)));
+              const event = JSON.parse(pending) as { type?: string; data?: { message?: unknown } };
+              if (event.type === "run.failed" && typeof event.data?.message === "string") runtimeFailure = event.data.message;
+              controller.enqueue(line(event));
             } catch {
               controller.enqueue(line({ type: "runtime.log", data: { message: pending } }));
             }
           }
           const finished = await command.wait();
-          if (finished.exitCode !== 0) throw new Error(`Agent runtime exited with code ${finished.exitCode}`);
+          if (finished.exitCode !== 0) throw new Error(presentRuntimeError(runtimeFailure, `Agent runtime exited with code ${finished.exitCode}`));
         }
 
         const statusResult = await sandbox.runCommand({ cmd: "git", args: ["status", "--porcelain"], cwd: repoDir });
@@ -589,7 +595,7 @@ export async function POST(request: Request) {
           },
         }));
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = presentRuntimeError(error instanceof Error ? error.message : String(error), "La ejecución del equipo falló");
         finishRun(runId, runOwner, message);
         controller.enqueue(line({
           type: "control.error",
