@@ -1,5 +1,6 @@
 import { Sandbox } from "@vercel/sandbox";
 import { copilotRunnerSource } from "@/lib/copilot-runner-source";
+import { presentRuntimeError } from "@/lib/runtime-error";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 import { finishRun, getRun, startRun } from "@/lib/run-store";
 
@@ -239,7 +240,7 @@ export async function POST(request: Request) {
           controller.enqueue(line({ type: "control.done", data: { delivery: "chat", message: "Chat de Copilot terminado." } }));
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = presentRuntimeError(error instanceof Error ? error.message : String(error), "La ejecución de Copilot falló");
         finishRun(runId, runOwner, message);
         controller.enqueue(line({
           type: "control.error",

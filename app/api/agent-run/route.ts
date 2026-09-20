@@ -2,6 +2,7 @@ import { Sandbox } from "@vercel/sandbox";
 import { readCodexAuth } from "@/lib/chatgpt-auth-cookie";
 import { createChatGPTWorkerSandbox } from "@/lib/chatgpt-sandbox";
 import { directAgentRunnerSource } from "@/lib/direct-agent-runner-source";
+import { presentRuntimeError } from "@/lib/runtime-error";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 import { finishRun, getRun, startRun } from "@/lib/run-store";
 
@@ -215,6 +216,7 @@ export async function POST(request: Request) {
           });
 
           let pending = "";
+          let runtimeFailure = "";
           const diagnostics: string[] = [];
           for await (const log of command.logs()) {
             pending += log.data;
@@ -222,17 +224,25 @@ export async function POST(request: Request) {
             pending = chunks.pop() ?? "";
             for (const chunk of chunks) {
               if (!chunk.trim()) continue;
-              try { controller.enqueue(line(JSON.parse(chunk))); }
+              try {
+                const event = JSON.parse(chunk) as { type?: string; data?: { message?: unknown } };
+                if (event.type === "run.failed" && typeof event.data?.message === "string") runtimeFailure = event.data.message;
+                controller.enqueue(line(event));
+              }
               catch { diagnostics.push(chunk.trim()); }
             }
           }
           if (pending.trim()) {
-            try { controller.enqueue(line(JSON.parse(pending))); }
+            try {
+              const event = JSON.parse(pending) as { type?: string; data?: { message?: unknown } };
+              if (event.type === "run.failed" && typeof event.data?.message === "string") runtimeFailure = event.data.message;
+              controller.enqueue(line(event));
+            }
             catch { diagnostics.push(pending.trim()); }
           }
           const result = await command.wait();
           if (result.exitCode !== 0) {
-            throw new Error(diagnostics.slice(-5).join(" | ").slice(-1600) || `Copilot specialist runtime exited with code ${result.exitCode}`);
+            throw new Error(presentRuntimeError(runtimeFailure || diagnostics.slice(-5).join(" | ").slice(-1600), `Copilot specialist runtime exited with code ${result.exitCode}`));
           }
         } else {
           const installAgents = await sandbox.runCommand({
@@ -294,7 +304,7 @@ export async function POST(request: Request) {
           data: { delivery: "agent", agentName, message: "Respuesta del especialista lista." },
         }));
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = presentRuntimeError(error instanceof Error ? error.message : String(error), "La ejecución del especialista falló");
         finishRun(runId, runOwner, message);
         controller.enqueue(line({
           type: "control.error",
