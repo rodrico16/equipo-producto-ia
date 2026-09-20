@@ -1,4 +1,5 @@
 import { readGitHubAppConfig, createManifestState } from "@/lib/github-app-auth";
+import { resolveAppOrigin } from "@/lib/app-origin";
 
 export const runtime = "nodejs";
 
@@ -25,11 +26,11 @@ function connectingPage(action: string, state: string, manifest: string) {
 }
 
 export async function GET(request: Request) {
-  const url = new URL(request.url);
+  const origin = resolveAppOrigin(request);
   const config = await readGitHubAppConfig();
   if (config) {
     const state = await createManifestState();
-    const callback = `${url.origin}/api/github/app/callback`;
+    const callback = `${origin}/api/github/app/callback`;
     const authorize = new URL("https://github.com/login/oauth/authorize");
     authorize.searchParams.set("client_id", config.clientId);
     authorize.searchParams.set("redirect_uri", callback);
@@ -37,7 +38,6 @@ export async function GET(request: Request) {
     return Response.redirect(authorize, 302);
   }
 
-  const origin = url.origin;
   const state = await createManifestState();
   const suffix = Math.random().toString(36).slice(2, 8);
   const manifest = JSON.stringify({

@@ -1,3 +1,4 @@
+import { resolveAppOrigin } from "@/lib/app-origin";
 import { consumeManifestState, readGitHubAppConfig } from "@/lib/github-app-auth";
 import { writeGitHubDeviceSession } from "@/lib/github-device-auth";
 
@@ -11,6 +12,7 @@ function donePage(origin: string, login: string) {
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
+  const origin = resolveAppOrigin(request);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   const config = await readGitHubAppConfig();
@@ -28,7 +30,7 @@ export async function GET(request: Request) {
       client_id: config.clientId,
       client_secret: config.clientSecret,
       code,
-      redirect_uri: `${url.origin}/api/github/app/callback`,
+      redirect_uri: `${origin}/api/github/app/callback`,
     }),
     cache: "no-store",
   });
@@ -58,7 +60,7 @@ export async function GET(request: Request) {
     avatarUrl: user.avatar_url ?? null,
   });
 
-  return new Response(donePage(url.origin, user.login), {
+  return new Response(donePage(origin, user.login), {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
