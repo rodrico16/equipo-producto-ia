@@ -7,7 +7,11 @@ import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth"
 import { checkpointRun, finishRun, getRun, startRun } from "@/lib/run-store";
 
 export const runtime = "nodejs";
-// Fluid Compute currently supports substantially longer Node.js runs; keep a safety margin\n// and checkpoint well before this ceiling so the user can decide whether to continue.\nexport const maxDuration = 1800;\n\nconst CHECKPOINT_AFTER_MS = 25 * 60 * 1000;
+// Fluid Compute currently supports substantially longer Node.js runs; keep a safety margin
+// and checkpoint well before this ceiling so the user can decide whether to continue.
+export const maxDuration = 1800;
+
+const CHECKPOINT_AFTER_MS = 25 * 60 * 1000;
 
 type RunRequest = {
   repo?: string;
