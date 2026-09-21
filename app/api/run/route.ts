@@ -223,7 +223,10 @@ export async function POST(request: Request) {
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      let sandbox: Sandbox | undefined;\n      const checkpointDeadline = Date.now() + CHECKPOINT_AFTER_MS;\n      const shouldCheckpoint = () => Date.now() >= checkpointDeadline;\n      try {
+      let sandbox: Sandbox | undefined;
+      const checkpointDeadline = Date.now() + CHECKPOINT_AFTER_MS;
+      const shouldCheckpoint = () => Date.now() >= checkpointDeadline;
+      try {
         controller.enqueue(line({ type: "control.status", data: { message: "Validando repositorio…" } }));
 
         const repoResponse = await fetch(`https://api.github.com/repos/${repo}`, {
