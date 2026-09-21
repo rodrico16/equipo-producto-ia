@@ -1,5 +1,6 @@
 import { decideRun, type CheckpointDecision } from "@/lib/run-store";
-import { requireControlRoomIdentity } from "@/lib/server-auth";\nimport { runCheckpointDecision } from "@/workflows/run-checkpoint";
+import { requireControlRoomIdentity } from "@/lib/server-auth";
+import { runCheckpointDecision } from "@/workflows/run-checkpoint";
 
 export const runtime = "nodejs";
 
@@ -17,7 +18,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return Response.json({ error: "decision must be continue, finish or auto" }, { status: 400 });
   }
 
-  const run = decideRun(id, owner, body.decision);\n  if (!run) {
+  const run = decideRun(id, owner, body.decision);
+  if (!run) {
     return Response.json({ error: "Run is not waiting for a decision" }, { status: 409 });
   }
 
