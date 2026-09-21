@@ -271,7 +271,8 @@ export async function POST(request: Request) {
                 cmd: "bash",
                 args: [
                   "-lc",
-                  'AUTH=$(printf "x-access-token:%s" "$GH_CLONE_TOKEN" | base64 | tr -d "\\n"); git -c http.extraHeader="Authorization: Basic $AUTH" clone --depth 1 --branch "$BASE_BRANCH" "https://github.com/$TARGET_REPO.git" "$TARGET_DIR"',
+                  'AUTH=$(printf "x-access-token:%s" "$GH_CLONE_TOKEN" | base64 | tr -d "
+"); git -c http.extraHeader="Authorization: Basic $AUTH" clone --depth 1 --branch "$BASE_BRANCH" "https://github.com/$TARGET_REPO.git" "$TARGET_DIR"',
                 ],
                 env: {
                   GH_CLONE_TOKEN: github.token,
@@ -556,7 +557,8 @@ export async function POST(request: Request) {
           cmd: "bash",
           args: [
             "-lc",
-            'AUTH=$(printf "x-access-token:%s" "$GH_PUSH_TOKEN" | base64 | tr -d "\\n"); git -c http.extraHeader="Authorization: Basic $AUTH" push -u origin "HEAD:$RUN_BRANCH"',
+            'AUTH=$(printf "x-access-token:%s" "$GH_PUSH_TOKEN" | base64 | tr -d "
+"); git -c http.extraHeader="Authorization: Basic $AUTH" push -u origin "HEAD:$RUN_BRANCH"',
           ],
           cwd: repoDir,
           env: { GH_PUSH_TOKEN: github.token, RUN_BRANCH: runBranch },
