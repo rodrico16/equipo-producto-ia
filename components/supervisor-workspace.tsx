@@ -459,6 +459,12 @@ export default function SupervisorWorkspace() {
       return;
     }
     if (event.type === "workspace.diff") { const diffStat = asString(data.diffStat); updateChat(chatId, (chat) => ({ ...chat, diffStat, updatedAt: Date.now() })); return; }
+    if (event.type === "control.checkpoint") {
+      const autoContinue = data.autoContinue === true;
+      updateChat(chatId, (chat) => ({ ...chat, running: autoContinue, runStatus: autoContinue ? "queued" : "waiting_for_user", status: autoContinue ? "Checkpoint guardado · continuación automática en cola…" : "Checkpoint guardado · esperando tu decisión", error: "", updatedAt: Date.now() }));
+      system(chatId, autoContinue ? "Checkpoint guardado. El próximo tramo continuará automáticamente." : "El equipo guardó un checkpoint y quedó en pausa hasta que decidas continuar o terminar.", "good");
+      return;
+    }
     if (event.type === "control.done") {
       const prUrl = asString(data.prUrl); const diffStat = asString(data.diffStat);
       if (prUrl) upsertPullRequest(chatId, data);
