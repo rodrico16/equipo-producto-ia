@@ -95,6 +95,7 @@ type ChatThread = {
   pullRequests: PullRequestRecord[];
   error: string;
   runId?: string;
+  runStatus?: string;
 };
 
 type ToolArgs = Record<string, unknown>;
@@ -138,7 +139,7 @@ function defaultChat(): ChatThread {
     id: uid("chat"), title: "Nuevo chat", createdAt: now, updatedAt: now,
     mode: "chat", provider: "chatgpt", repo: "", branch: "main", model: "", reasoningEffort: "",
     draft: "", status: "Listo", running: false, messages: [], usedAgents: [], agentThreads: {}, queuedSupervisor: [],
-    diffStat: "", prUrl: "", pullRequests: [], error: "", runId: "",
+    diffStat: "", prUrl: "", pullRequests: [], error: "", runId: "", runStatus: "",
   };
 }
 function normalizeChat(input: Partial<ChatThread>): ChatThread {
@@ -265,9 +266,13 @@ export default function SupervisorWorkspace() {
             continue;
           }
           if (!response.ok) continue;
-          const state = await response.json() as { status?: string; error?: string };
-          if (state.status === "completed") updateChat(chat.id, (current) => ({ ...current, running: false, status: "Turno completado", error: "", updatedAt: Date.now() }));
-          if (state.status === "failed") updateChat(chat.id, (current) => ({ ...current, running: false, status: "Turno detenido", error: state.error || "La ejecución falló", updatedAt: Date.now() }));
+          const state = await response.json() as { status?: string; error?: string; autoContinue?: boolean };
+          if (state.status === "waiting_for_user") updateChat(chat.id, (current) => ({ ...current, running: false, runStatus: state.status, status: "El equipo está en pausa y espera tu decisión", error: "", updatedAt: Date.now() }));
+          else if (state.status === "queued") updateChat(chat.id, (current) => ({ ...current, running: true, runStatus: state.status, status: state.autoContinue ? "Continuación automática en cola…" : "Continuación en cola…", error: "", updatedAt: Date.now() }));
+          else if (state.status === "running" || state.status === "publishing") updateChat(chat.id, (current) => ({ ...current, running: true, runStatus: state.status, updatedAt: Date.now() }));
+          else if (state.status === "completed") updateChat(chat.id, (current) => ({ ...current, running: false, runStatus: state.status, status: "Turno completado", error: "", updatedAt: Date.now() }));
+          else if (state.status === "cancelled") updateChat(chat.id, (current) => ({ ...current, running: false, runStatus: state.status, status: "Trabajo terminado en el checkpoint", error: "", updatedAt: Date.now() }));
+          else if (state.status === "failed") updateChat(chat.id, (current) => ({ ...current, running: false, runStatus: state.status, status: "Turno detenido", error: state.error || "La ejecución falló", updatedAt: Date.now() }));
         } catch { /* transient disconnect; retry on the next interval */ }
       }
     };
@@ -521,6 +526,31 @@ export default function SupervisorWorkspace() {
     }
   }
 
+  async function decideCheckpoint(chatId: string, decision: "continue" | "finish" | "auto") {
+    const thread = chatsRef.current.find((chat) => chat.id === chatId);
+    if (!thread?.runId) return;
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(thread.runId)}/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+      const state = await response.json() as { status?: string; error?: string; autoContinue?: boolean };
+      if (!response.ok) throw new Error(state.error || `HTTP ${response.status}`);
+      updateChat(chatId, (chat) => ({
+        ...chat,
+        running: state.status === "queued",
+        runStatus: state.status,
+        status: decision === "finish" ? "Trabajo terminado en el checkpoint" : decision === "auto" ? "Continuación automática activada…" : "Continuación en cola…",
+        error: "",
+        updatedAt: Date.now(),
+      }));
+      system(chatId, decision === "finish" ? "Detuviste el trabajo en este checkpoint." : decision === "auto" ? "El equipo continuará automáticamente en los próximos checkpoints." : "Pediste al equipo que continúe.", "good");
+    } catch (error) {
+      updateChat(chatId, (chat) => ({ ...chat, error: error instanceof Error ? error.message : String(error), updatedAt: Date.now() }));
+    }
+  }
+
   function sendSupervisor() {
     if (!active || !active.draft.trim() || !canSendSupervisor) return;
     const text = active.draft.trim();
@@ -634,7 +664,7 @@ export default function SupervisorWorkspace() {
         <header className={s.chatHeader}><button aria-label="Volver a chats" className={s.mobileBack} onClick={() => setMobileListOpen(true)}>‹</button><span className={s.supervisorAvatar}>S</span><div className={s.headerCopy}><strong>Supervisor</strong><span>{active.title} · {active.running ? active.status : "listo"}</span></div><button aria-label="Abrir chats de agentes" className={s.agentToggle} onClick={() => setMobileAgentsOpen(true)}>{parallelThreads.length ? `${parallelThreads.length} agentes` : "Agentes"}</button><button ref={settingsTriggerRef} aria-label="Abrir configuración" aria-expanded={settingsOpen} aria-controls="supervisor-settings" className={s.iconButton} onClick={() => setSettingsOpen(true)}>⚙</button></header>
         <div className={s.contextBar}><span>{modeLabel(active.mode)}</span><span>{active.provider === "copilot" ? "Copilot" : "ChatGPT"} · {selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</span>{active.repo && <span>repo · {active.repo}</span>}{active.queuedSupervisor.length > 0 && <span className={s.queueChip}>{active.queuedSupervisor.length} en cola</span>}{active.pullRequests.length > 0 && <button type="button" className={s.prQuickButton} aria-label={`Abrir lista de ${active.pullRequests.length} Pull Requests`} aria-expanded={prQuickOpen} onClick={() => setPrQuickOpen((open) => !open)}>PRs · {active.pullRequests.length}</button>}</div>
         <div className={s.messages}><div className={s.stack}>{prQuickOpen && active.pullRequests.length > 0 && <section className={s.prQuickList} aria-label="Lista rápida de Pull Requests"><div className={s.prQuickHeader}><strong>Pull Requests del chat</strong><button type="button" aria-label="Cerrar lista de Pull Requests" onClick={() => setPrQuickOpen(false)}>×</button></div>{active.pullRequests.slice().reverse().map((pr) => <a className={s.prQuickItem} key={pr.url} href={pr.url} target="_blank" rel="noreferrer"><span>{pr.repo || pr.url} {pr.number ? `#${pr.number}` : "↗"}</span><small>{pr.branch || "Abrir en GitHub"}</small></a>)}</section>}{active.messages.length === 0 && <div className={s.welcome}><div className={s.welcomeAvatar}>S</div><h1>Hablá con Supervisor</h1><p>Supervisor coordina el equipo. Los especialistas aparecen a la derecha como chats paralelos.</p></div>}{renderToolGroups(active.messages, "Supervisor", renderSupervisorMessage)}{active.pullRequests.length === 0 && active.diffStat && <div className={s.delivery}><strong>Cambios preparados</strong><pre>{active.diffStat}</pre></div>}<div ref={endRef} /></div></div>
-        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>Ocurrió un error:</strong> {active.error} <span>Tu contexto y borrador se conservaron; podés reintentar.</span></div>}<div className={s.composer}><button aria-label="Abrir configuración" className={s.plus} onClick={() => setSettingsOpen(true)}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby="supervisor-send-hint" value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Escribí otra instrucción; queda en cola…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button>{sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</div></footer>
+        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.runStatus === "waiting_for_user" && <div className={s.checkpointBanner} role="status" aria-live="polite"><div><strong>El equipo llegó a un checkpoint</strong><small>El trabajo quedó guardado y no consume ejecución mientras espera tu decisión.</small></div><div className={s.checkpointActions}><button type="button" onClick={() => void decideCheckpoint(active.id, "continue")}>▶ Continuar</button><button type="button" onClick={() => void decideCheckpoint(active.id, "auto")}>↻ Continuar automáticamente</button><button type="button" className={s.checkpointStop} onClick={() => void decideCheckpoint(active.id, "finish")}>■ Terminar</button></div></div>}{active.error && <div className={s.errorBanner} role="alert"><strong>Ocurrió un error:</strong> {active.error} <span>Tu contexto y borrador se conservaron; podés reintentar.</span></div>}<div className={s.composer}><button aria-label="Abrir configuración" className={s.plus} onClick={() => setSettingsOpen(true)}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby="supervisor-send-hint" value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Escribí otra instrucción; queda en cola…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button>{sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</div></footer>
       </section>
 
       <aside className={s.agentRail}>
