@@ -26,7 +26,8 @@
     "next": "16.3.5",
     "react": "19.2.0",
     "react-dom": "19.2.0",
-    "streamdown": "2.6.0"
+    "streamdown": "2.6.0",
+    "workflow": "latest"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
