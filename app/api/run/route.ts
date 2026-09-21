@@ -4,10 +4,10 @@ import { createChatGPTWorkerSandbox } from "@/lib/chatgpt-sandbox";
 import { copilotRunnerSource } from "@/lib/copilot-runner-source";
 import { presentRuntimeError } from "@/lib/runtime-error";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
-import { finishRun, getRun, startRun } from "@/lib/run-store";
+import { checkpointRun, finishRun, getRun, startRun } from "@/lib/run-store";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+// Fluid Compute currently supports substantially longer Node.js runs; keep a safety margin\n// and checkpoint well before this ceiling so the user can decide whether to continue.\nexport const maxDuration = 1800;\n\nconst CHECKPOINT_AFTER_MS = 25 * 60 * 1000;
 
 type RunRequest = {
   repo?: string;
@@ -223,8 +223,7 @@ export async function POST(request: Request) {
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      let sandbox: Sandbox | undefined;
-      try {
+      let sandbox: Sandbox | undefined;\n      const checkpointDeadline = Date.now() + CHECKPOINT_AFTER_MS;\n      const shouldCheckpoint = () => Date.now() >= checkpointDeadline;\n      try {
         controller.enqueue(line({ type: "control.status", data: { message: "Validando repositorio…" } }));
 
         const repoResponse = await fetch(`https://api.github.com/repos/${repo}`, {
@@ -475,6 +474,24 @@ export async function POST(request: Request) {
           }
           const finished = await command.wait();
           if (finished.exitCode !== 0) throw new Error(presentRuntimeError(runtimeFailure, `Agent runtime exited with code ${finished.exitCode}`));
+        }
+
+        if (shouldCheckpoint()) {
+          const segment = (getRun(runId, runOwner)?.checkpoint?.segment ?? 0) + 1;
+          const state = checkpointRun(runId, runOwner, segment);
+          controller.enqueue(line({
+            type: "control.checkpoint",
+            data: {
+              runId,
+              segment,
+              status: state?.status || "waiting_for_user",
+              autoContinue: Boolean(state?.autoContinue),
+              message: state?.autoContinue
+                ? "Checkpoint guardado. El siguiente tramo queda en cola automáticamente."
+                : "Checkpoint guardado. El equipo espera tu decisión para continuar.",
+            },
+          }));
+          return;
         }
 
         const statusResult = await sandbox.runCommand({ cmd: "git", args: ["status", "--porcelain"], cwd: repoDir });
