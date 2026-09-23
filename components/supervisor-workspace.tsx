@@ -192,19 +192,7 @@ export default function SupervisorWorkspace() {
   const settingsCloseRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => { chatsRef.current = chats; }, [chats]);
-  useEffect(() => {
-    const cancelActiveRuns = () => {
-      for (const { controller, reader } of activeRunsRef.current.values()) {
-        controller.abort();
-        void reader?.cancel();
-      }
-    };
-    window.addEventListener("pagehide", cancelActiveRuns);
-    return () => {
-      window.removeEventListener("pagehide", cancelActiveRuns);
-      cancelActiveRuns();
-    };
-  }, []);
+  // Closing the mobile browser must not explicitly cancel an in-flight server run.
   useEffect(() => { selectedAgentRef.current = selectedAgentName; }, [selectedAgentName]);
   useEffect(() => {
     if (!settingsOpen) return;
@@ -257,16 +245,17 @@ export default function SupervisorWorkspace() {
     if (!hydrated) return;
     const recover = async () => {
       for (const chat of chatsRef.current) {
-        if (!chat.runId || !chat.running) continue;
+        if (!chat.runId || (!chat.running && chat.status !== "Estado por confirmar")) continue;
+        if (activeRunsRef.current.has(chat.runId)) continue;
         try {
           const response = await fetch(`/api/runs/${encodeURIComponent(chat.runId)}`, { cache: "no-store" });
           if (response.status === 404) {
-            updateChat(chat.id, (current) => ({ ...current, running: false, status: "Ejecución no disponible", error: "La ejecución se perdió al reiniciar el servidor. Podés reintentar sin duplicar este turno.", updatedAt: Date.now() }));
+            updateChat(chat.id, (current) => current.status === "Estado por confirmar" ? current : ({ ...current, running: false, status: "Estado por confirmar", error: "No se puede verificar el estado de este turno. El servidor no conserva su registro tras un reinicio; la conexión del chat puede seguir funcionando. Revisá si el trabajo se completó antes de repetir el pedido.", updatedAt: Date.now() }));
             continue;
           }
           if (!response.ok) continue;
           const state = await response.json() as { status?: string; error?: string };
-          if (state.status === "completed") updateChat(chat.id, (current) => ({ ...current, running: false, status: "Turno completado", error: "", updatedAt: Date.now() }));
+          if (state.status === "completed") updateChat(chat.id, (current) => ({ ...current, running: false, status: "Turno completado", error: "El turno terminó, pero la respuesta no está disponible en este dispositivo. Revisá el resultado antes de repetirlo.", updatedAt: Date.now() }));
           if (state.status === "failed") updateChat(chat.id, (current) => ({ ...current, running: false, status: "Turno detenido", error: state.error || "La ejecución falló", updatedAt: Date.now() }));
         } catch { /* transient disconnect; retry on the next interval */ }
       }
@@ -330,7 +319,7 @@ export default function SupervisorWorkspace() {
 
   useEffect(() => {
     for (const chat of chats) {
-      if (chat.running || !chat.queuedSupervisor.length || queueLocks.current.has(chat.id)) continue;
+      if (chat.running || (chat.runId && chat.status === "Estado por confirmar") || !chat.queuedSupervisor.length || queueLocks.current.has(chat.id)) continue;
       const next = chat.queuedSupervisor[0];
       queueLocks.current.add(chat.id);
       setChats((current) => current.map((item) => item.id === chat.id ? { ...item, queuedSupervisor: item.queuedSupervisor.slice(1) } : item));
@@ -483,6 +472,8 @@ export default function SupervisorWorkspace() {
     const specialist = specialistContext(thread);
     const requestPrompt = [history ? `CONTEXTO DEL CHAT CON SUPERVISOR:\n${history}` : "", specialist ? `INTERVENCIONES DIRECTAS CON ESPECIALISTAS:\n${specialist}` : "", `NUEVO PEDIDO DEL USUARIO:\n${prompt}`].filter(Boolean).join("\n\n");
     updateChat(chatId, (chat) => ({ ...chat, title: chat.title === "Nuevo chat" ? titleFrom(prompt) : chat.title, draft: "", running: true, runId, status: "Supervisor está preparando el turno…", error: "", updatedAt: Date.now(), messages: alreadyAppended ? chat.messages : [...chat.messages, { id: `${runId}:user`, kind: "user", text: prompt, at: Date.now() } as ChatMessage].slice(-220) }));
+    let responseStarted = false;
+    let terminalEvent = false;
     try {
       const endpoint = thread.mode === "pr" ? "/api/run" : thread.provider === "copilot" ? "/api/copilot-run" : "/api/chat-run";
       const payload = thread.mode === "pr"
@@ -495,6 +486,7 @@ export default function SupervisorWorkspace() {
         signal: controller.signal,
       });
       if (!response.ok || !response.body) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
+      responseStarted = true;
       const reader = response.body.getReader();
       activeRunsRef.current.get(runId)!.reader = reader;
       const decoder = new TextDecoder(); let buffer = "";
@@ -505,19 +497,31 @@ export default function SupervisorWorkspace() {
         const lines = buffer.split("\n"); buffer = lines.pop() ?? "";
         for (const raw of lines) {
           if (controller.signal.aborted) break;
-          if (raw.trim()) handleSupervisorEvent(chatId, runId, thread.provider, thread.model, JSON.parse(raw) as StreamEvent);
+          if (raw.trim()) {
+            const event = JSON.parse(raw) as StreamEvent;
+            if (["control.done", "control.error", "run.failed"].includes(event.type)) terminalEvent = true;
+            handleSupervisorEvent(chatId, runId, thread.provider, thread.model, event);
+          }
         }
         if (done || controller.signal.aborted) break;
       }
-      if (!controller.signal.aborted && buffer.trim()) handleSupervisorEvent(chatId, runId, thread.provider, thread.model, JSON.parse(buffer) as StreamEvent);
+      if (!controller.signal.aborted && buffer.trim()) {
+        const event = JSON.parse(buffer) as StreamEvent;
+        if (["control.done", "control.error", "run.failed"].includes(event.type)) terminalEvent = true;
+        handleSupervisorEvent(chatId, runId, thread.provider, thread.model, event);
+      }
+      if (!controller.signal.aborted && !terminalEvent) throw new Error("La transmisión terminó antes de confirmar el resultado.");
     } catch (error) {
       const interrupted = controller.signal.aborted;
       const message = interrupted ? "La ejecución fue interrumpida." : error instanceof Error ? error.message : String(error);
-      updateChat(chatId, (chat) => ({ ...chat, running: false, status: interrupted ? "Turno interrumpido" : "Turno detenido", error: message, updatedAt: Date.now() }));
-      system(chatId, message, "bad");
+      if (responseStarted && !interrupted && !terminalEvent) {
+        updateChat(chatId, (chat) => ({ ...chat, running: true, status: "Consultando estado del turno…", error: "", updatedAt: Date.now() }));
+      } else {
+        updateChat(chatId, (chat) => ({ ...chat, running: false, status: interrupted ? "Turno interrumpido" : "Turno detenido", error: message, updatedAt: Date.now() }));
+        system(chatId, message, "bad");
+      }
     } finally {
       activeRunsRef.current.delete(runId);
-      updateChat(chatId, (chat) => chat.running ? { ...chat, running: false, updatedAt: Date.now() } : chat);
     }
   }
 
@@ -634,7 +638,7 @@ export default function SupervisorWorkspace() {
         <header className={s.chatHeader}><button aria-label="Volver a chats" className={s.mobileBack} onClick={() => setMobileListOpen(true)}>‹</button><span className={s.supervisorAvatar}>S</span><div className={s.headerCopy}><strong>Supervisor</strong><span>{active.title} · {active.running ? active.status : "listo"}</span></div><button aria-label="Abrir chats de agentes" className={s.agentToggle} onClick={() => setMobileAgentsOpen(true)}>{parallelThreads.length ? `${parallelThreads.length} agentes` : "Agentes"}</button><button ref={settingsTriggerRef} aria-label="Abrir configuración" aria-expanded={settingsOpen} aria-controls="supervisor-settings" className={s.iconButton} onClick={() => setSettingsOpen(true)}>⚙</button></header>
         <div className={s.contextBar}><span>{modeLabel(active.mode)}</span><span>{active.provider === "copilot" ? "Copilot" : "ChatGPT"} · {selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</span>{active.repo && <span>repo · {active.repo}</span>}{active.queuedSupervisor.length > 0 && <span className={s.queueChip}>{active.queuedSupervisor.length} en cola</span>}{active.pullRequests.length > 0 && <button type="button" className={s.prQuickButton} aria-label={`Abrir lista de ${active.pullRequests.length} Pull Requests`} aria-expanded={prQuickOpen} onClick={() => setPrQuickOpen((open) => !open)}>PRs · {active.pullRequests.length}</button>}</div>
         <div className={s.messages}><div className={s.stack}>{prQuickOpen && active.pullRequests.length > 0 && <section className={s.prQuickList} aria-label="Lista rápida de Pull Requests"><div className={s.prQuickHeader}><strong>Pull Requests del chat</strong><button type="button" aria-label="Cerrar lista de Pull Requests" onClick={() => setPrQuickOpen(false)}>×</button></div>{active.pullRequests.slice().reverse().map((pr) => <a className={s.prQuickItem} key={pr.url} href={pr.url} target="_blank" rel="noreferrer"><span>{pr.repo || pr.url} {pr.number ? `#${pr.number}` : "↗"}</span><small>{pr.branch || "Abrir en GitHub"}</small></a>)}</section>}{active.messages.length === 0 && <div className={s.welcome}><div className={s.welcomeAvatar}>S</div><h1>Hablá con Supervisor</h1><p>Supervisor coordina el equipo. Los especialistas aparecen a la derecha como chats paralelos.</p></div>}{renderToolGroups(active.messages, "Supervisor", renderSupervisorMessage)}{active.pullRequests.length === 0 && active.diffStat && <div className={s.delivery}><strong>Cambios preparados</strong><pre>{active.diffStat}</pre></div>}<div ref={endRef} /></div></div>
-        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>Ocurrió un error:</strong> {active.error} <span>Tu contexto y borrador se conservaron; podés reintentar.</span></div>}<div className={s.composer}><button aria-label="Abrir configuración" className={s.plus} onClick={() => setSettingsOpen(true)}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby="supervisor-send-hint" value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Escribí otra instrucción; queda en cola…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button>{sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</div></footer>
+        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>{active.status === "Estado por confirmar" ? "Estado del turno incierto:" : "Ocurrió un error:"}</strong> {active.error}</div>}<div className={s.composer}><button aria-label="Abrir configuración" className={s.plus} onClick={() => setSettingsOpen(true)}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby="supervisor-send-hint" value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Escribí otra instrucción; queda en cola…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button>{sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</div></footer>
       </section>
 
       <aside className={s.agentRail}>
