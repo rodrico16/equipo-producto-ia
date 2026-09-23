@@ -146,6 +146,9 @@ function normalizeChat(input: Partial<ChatThread>): ChatThread {
   const threads: Record<string, AgentThread> = { ...(input.agentThreads || {}) };
   const supervisorMessages: ChatMessage[] = [];
   for (const message of input.messages || []) {
+    // Older sessions persisted these setup notices once per turn. Hide them on
+    // restore so an existing conversation benefits from the cleaner timeline.
+    if (message.kind === "system" && /^(Equipo cargado · \d+ agentes disponibles|Supervisor inició · (GitHub Copilot|ChatGPT \/ Codex) · .+)$/.test(message.text)) continue;
     if (message.kind === "agent" && message.agent && message.agent !== "supervisor") {
       const name = message.agent;
       const thread = threads[name] || defaultAgentThread(name, message.displayName);
@@ -380,7 +383,7 @@ export default function SupervisorWorkspace() {
     return name ? { name, assignment } : null;
   }
 
-  function handleSupervisorEvent(chatId: string, runId: string, provider: Provider, model: string, event: StreamEvent) {
+  function handleSupervisorEvent(chatId: string, runId: string, event: StreamEvent) {
     const data = event.data ?? {};
     const agentId = event.agentId || "supervisor";
     if (!agentMaps.current[chatId]) agentMaps.current[chatId] = { supervisor: "supervisor" };
@@ -388,8 +391,9 @@ export default function SupervisorWorkspace() {
     if (event.type === "control.status") {
       const message = asString(data.message); if (message) updateChat(chatId, (chat) => ({ ...chat, status: message, updatedAt: Date.now() })); return;
     }
-    if (event.type === "team.loaded") { system(chatId, `Equipo cargado · ${String(data.count ?? agents.length)} agentes disponibles`, "good"); return; }
-    if (event.type === "run.started") { system(chatId, `Supervisor inició · ${provider === "copilot" ? "GitHub Copilot" : "ChatGPT / Codex"} · ${model || "auto"}`, "good"); return; }
+    // These are transport/setup events. The header and running banner already show
+    // the active turn, so adding them to the conversation repeats on every message.
+    if (event.type === "team.loaded" || event.type === "run.started") return;
     if (event.type === "specialist.assigned" || event.type === "subagent.started" || event.type === "subagent.selected") {
       const name = asString(data.agentName) || asString(data.agentDisplayName) || agentId;
       const assignment = asString(data.assignment) || asString(data.objective) || asString(data.instructions);
@@ -500,7 +504,7 @@ export default function SupervisorWorkspace() {
           if (raw.trim()) {
             const event = JSON.parse(raw) as StreamEvent;
             if (["control.done", "control.error", "run.failed"].includes(event.type)) terminalEvent = true;
-            handleSupervisorEvent(chatId, runId, thread.provider, thread.model, event);
+            handleSupervisorEvent(chatId, runId, event);
           }
         }
         if (done || controller.signal.aborted) break;
@@ -508,7 +512,7 @@ export default function SupervisorWorkspace() {
       if (!controller.signal.aborted && buffer.trim()) {
         const event = JSON.parse(buffer) as StreamEvent;
         if (["control.done", "control.error", "run.failed"].includes(event.type)) terminalEvent = true;
-        handleSupervisorEvent(chatId, runId, thread.provider, thread.model, event);
+        handleSupervisorEvent(chatId, runId, event);
       }
       if (!controller.signal.aborted && !terminalEvent) throw new Error("La transmisión terminó antes de confirmar el resultado.");
     } catch (error) {
@@ -638,7 +642,7 @@ export default function SupervisorWorkspace() {
         <header className={s.chatHeader}><button aria-label="Volver a chats" className={s.mobileBack} onClick={() => setMobileListOpen(true)}>‹</button><span className={s.supervisorAvatar}>S</span><div className={s.headerCopy}><strong>Supervisor</strong><span>{active.title} · {active.running ? active.status : "listo"}</span></div><button aria-label="Abrir chats de agentes" className={s.agentToggle} onClick={() => setMobileAgentsOpen(true)}>{parallelThreads.length ? `${parallelThreads.length} agentes` : "Agentes"}</button><button ref={settingsTriggerRef} aria-label="Abrir configuración" aria-expanded={settingsOpen} aria-controls="supervisor-settings" className={s.iconButton} onClick={() => setSettingsOpen(true)}>⚙</button></header>
         <div className={s.contextBar}><span>{modeLabel(active.mode)}</span><span>{active.provider === "copilot" ? "Copilot" : "ChatGPT"} · {selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</span>{active.repo && <span>repo · {active.repo}</span>}{active.queuedSupervisor.length > 0 && <span className={s.queueChip}>{active.queuedSupervisor.length} en cola</span>}{active.pullRequests.length > 0 && <button type="button" className={s.prQuickButton} aria-label={`Abrir lista de ${active.pullRequests.length} Pull Requests`} aria-expanded={prQuickOpen} onClick={() => setPrQuickOpen((open) => !open)}>PRs · {active.pullRequests.length}</button>}</div>
         <div className={s.messages}><div className={s.stack}>{prQuickOpen && active.pullRequests.length > 0 && <section className={s.prQuickList} aria-label="Lista rápida de Pull Requests"><div className={s.prQuickHeader}><strong>Pull Requests del chat</strong><button type="button" aria-label="Cerrar lista de Pull Requests" onClick={() => setPrQuickOpen(false)}>×</button></div>{active.pullRequests.slice().reverse().map((pr) => <a className={s.prQuickItem} key={pr.url} href={pr.url} target="_blank" rel="noreferrer"><span>{pr.repo || pr.url} {pr.number ? `#${pr.number}` : "↗"}</span><small>{pr.branch || "Abrir en GitHub"}</small></a>)}</section>}{active.messages.length === 0 && <div className={s.welcome}><div className={s.welcomeAvatar}>S</div><h1>Hablá con Supervisor</h1><p>Supervisor coordina el equipo. Los especialistas aparecen a la derecha como chats paralelos.</p></div>}{renderToolGroups(active.messages, "Supervisor", renderSupervisorMessage)}{active.pullRequests.length === 0 && active.diffStat && <div className={s.delivery}><strong>Cambios preparados</strong><pre>{active.diffStat}</pre></div>}<div ref={endRef} /></div></div>
-        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>{active.status === "Estado por confirmar" ? "Estado del turno incierto:" : "Ocurrió un error:"}</strong> {active.error}</div>}<div className={s.composer}><button aria-label="Abrir configuración" className={s.plus} onClick={() => setSettingsOpen(true)}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby="supervisor-send-hint" value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Escribí otra instrucción; queda en cola…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button>{sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</div></footer>
+        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>{active.status === "Estado por confirmar" ? "Estado del turno incierto:" : "Ocurrió un error:"}</strong> {active.error}</div>}<div className={s.composer}><button aria-label="Abrir configuración" className={s.plus} onClick={() => setSettingsOpen(true)}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby={active.draft.trim() && sendHint ? "supervisor-send-hint" : undefined} value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Otra instrucción (queda en cola)…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button></div>{active.draft.trim() && sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</footer>
       </section>
 
       <aside className={s.agentRail}>
