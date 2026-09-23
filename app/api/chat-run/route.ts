@@ -3,6 +3,7 @@ import { readCodexAuth } from "@/lib/chatgpt-auth-cookie";
 import { createChatGPTWorkerSandbox } from "@/lib/chatgpt-sandbox";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 import { finishRun, getRun, startRun } from "@/lib/run-store";
+import { validateAttachments, writeRunAttachments, type RunAttachment } from "@/lib/run-attachments";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -15,6 +16,7 @@ type RunRequest = {
   model?: string;
   reasoningEffort?: string;
   prompt?: string;
+  attachments?: RunAttachment[];
 };
 type JsonRecord = Record<string, unknown>;
 
@@ -123,6 +125,9 @@ export async function POST(request: Request) {
   const repo = body.repo?.trim() || "";
 
   if (!prompt) return Response.json({ error: "Prompt is required" }, { status: 400 });
+  let attachments: RunAttachment[];
+  try { attachments = validateAttachments(body.attachments); }
+  catch (error) { return Response.json({ error: (error as Error).message }, { status: 400 }); }
   if (mode === "draft" && !repoPattern.test(repo)) return Response.json({ error: "Choose a repository first" }, { status: 400 });
 
   let runOwner = "";
@@ -204,12 +209,15 @@ export async function POST(request: Request) {
               "Do not commit, push, create a branch on GitHub, or create a pull request. The result is a private draft only.",
               "Finish with a concise implementation and verification summary.",
             ];
-        const teamPrompt = [...instructions, "", `USER OBJECTIVE:\n${prompt}`].join("\n");
+        const attached = await writeRunAttachments(sandbox, attachments, runId);
+        const teamPrompt = [...instructions, "", `USER OBJECTIVE:\n${prompt}`, attached.context].filter(Boolean).join("\n");
 
         const args = ["--sandbox", "danger-full-access", "--ask-for-approval", "never"];
         if (model && model !== "auto") args.push("--model", model);
         if (reasoningEffort) args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
-        args.push("exec", "--json", teamPrompt);
+        args.push("exec", "--json");
+        for (const image of attached.images) args.push("--image", image);
+        args.push(teamPrompt);
 
         const command = await sandbox.runCommand({
           cmd: "bash",
