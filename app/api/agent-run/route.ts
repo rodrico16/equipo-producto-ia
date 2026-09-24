@@ -278,7 +278,8 @@ export async function POST(request: Request) {
           if (reasoningEffort) args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
           args.push("exec", "--json");
           for (const image of attached.images) args.push("--image", image);
-          args.push(specialistPrompt);
+          // End option parsing so --image cannot swallow the positional prompt.
+          args.push("--", specialistPrompt);
 
           const command = await sandbox.runCommand({
             cmd: "bash",

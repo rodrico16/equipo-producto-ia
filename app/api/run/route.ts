@@ -403,7 +403,8 @@ export async function POST(request: Request) {
           }
           args.push("exec", "--json");
           for (const image of attached.images) args.push("--image", image);
-          args.push(teamPrompt);
+          // End option parsing so --image cannot swallow the positional prompt.
+          args.push("--", teamPrompt);
 
           controller.enqueue(line({
             type: "control.status",
