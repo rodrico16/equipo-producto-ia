@@ -459,6 +459,12 @@ export default function SupervisorWorkspace() {
       return;
     }
     if (event.type === "workspace.diff") { const diffStat = asString(data.diffStat); updateChat(chatId, (chat) => ({ ...chat, diffStat, updatedAt: Date.now() })); return; }
+    if (event.type === "auth.required") {
+      window.dispatchEvent(new CustomEvent("epia:reauth-required", {
+        detail: { provider: data.provider === "github" ? "github" : "chatgpt", message: asString(data.message) },
+      }));
+      return;
+    }
     if (event.type === "control.done") {
       const prUrl = asString(data.prUrl); const diffStat = asString(data.diffStat);
       if (prUrl) upsertPullRequest(chatId, data);
