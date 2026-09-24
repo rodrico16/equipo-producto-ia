@@ -1,6 +1,7 @@
 import { requireControlRoomIdentity } from "@/lib/server-auth";
 import { finishRun, getRun, startRun } from "@/lib/run-store";
 import { validateAttachments, type RunAttachment } from "@/lib/run-attachments";
+import { googleProjectId, requireFreshGoogleAuth } from "@/lib/google-auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -31,10 +32,6 @@ function line(payload: unknown) {
   return encoder.encode(JSON.stringify(payload) + "\n");
 }
 
-function geminiKey() {
-  return process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || "";
-}
-
 function safeModel(model?: string) {
   const value = model?.trim() || DEFAULT_MODEL;
   return /^[A-Za-z0-9_.:-]+$/.test(value) ? value : DEFAULT_MODEL;
@@ -52,10 +49,8 @@ export async function POST(request: Request) {
   const prompt = body.prompt?.trim();
   const model = safeModel(body.model);
   const agentName = body.agentName?.trim() || "supervisor";
-  const apiKey = geminiKey();
 
   if (!prompt) return Response.json({ error: "Prompt is required" }, { status: 400 });
-  if (!apiKey) return Response.json({ error: "Configurá GOOGLE_API_KEY o GEMINI_API_KEY para usar Google AI Studio." }, { status: 401 });
 
   let attachments: RunAttachment[];
   try { attachments = validateAttachments(body.attachments); }
@@ -76,6 +71,8 @@ export async function POST(request: Request) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
+        const auth = await requireFreshGoogleAuth();
+        const projectId = googleProjectId();
         controller.enqueue(line({ type: "run.started", agentId: agentName, data: { provider: "google", model } }));
         controller.enqueue(line({ type: "control.status", agentId: agentName, data: { message: "Consultando Gemini…" } }));
 
@@ -95,9 +92,13 @@ export async function POST(request: Request) {
           ...attachments.map((file) => ({ inlineData: { mimeType: file.type || "application/octet-stream", data: file.data } })),
         ];
 
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${auth.accessToken}`,
+            ...(projectId ? { "x-goog-user-project": projectId } : {}),
+          },
           body: JSON.stringify({
             contents: [{ role: "user", parts }],
             generationConfig: { temperature: 0.7 },
