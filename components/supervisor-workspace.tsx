@@ -123,6 +123,28 @@ const GOOGLE_AI_STUDIO_MODELS: ModelOption[] = [
   { id: "gemini-1.5-flash", displayName: "Gemini 1.5 Flash" },
 ];
 const APPLE_INTELLIGENCE_MODEL: ModelOption = { id: "apple-intelligence", displayName: "Apple Intelligence · iPhone" };
+const REASONING_EFFORT_LABELS: Record<string, string> = {
+  minimal: "Mínimo",
+  low: "Bajo",
+  medium: "Medio",
+  high: "Alto",
+};
+
+function modelLabel(model: ModelOption) {
+  return model.displayName || model.name || model.id;
+}
+function effortLabel(effortId: string) {
+  return REASONING_EFFORT_LABELS[effortId] || effortId.replaceAll("_", " ");
+}
+function modelCaption(model: ModelOption) {
+  const efforts = model.reasoningEfforts ?? [];
+  if (model.id === "auto") return "El proveedor elige el mejor modelo disponible.";
+  if (efforts.length) {
+    const defaultEffort = model.defaultReasoningEffort ? ` · ${effortLabel(model.defaultReasoningEffort)} por defecto` : "";
+    return `${efforts.length} ${efforts.length === 1 ? "nivel" : "niveles"} de esfuerzo${defaultEffort}`;
+  }
+  return model.isDefault ? "Predeterminado · esfuerzo automático" : "Esfuerzo automático";
+}
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -360,9 +382,17 @@ export default function SupervisorWorkspace() {
         ? [APPLE_INTELLIGENCE_MODEL]
         : chatGPTModels;
   const selectedModel = models.find((m) => m.id === active?.model);
+  const reasoningEfforts = selectedModel?.reasoningEfforts ?? [];
+  const selectedReasoningEffort = active.reasoningEffort || selectedModel?.defaultReasoningEffort || reasoningEfforts[0]?.id || "";
   const githubConnected = Boolean(session?.githubConnected);
   const chatGPTConnected = chatGPT.status === "connected";
   const googleConnected = google.status === "connected";
+  const providerOptions = useMemo(() => [
+    { id: "chatgpt" as Provider, label: "ChatGPT / Codex", description: chatGPTConnected ? "Modelos GPT y Codex con esfuerzo cuando está disponible." : "Conectá ChatGPT para cargar modelos." },
+    { id: "copilot" as Provider, label: "GitHub Copilot", description: githubConnected ? "Copilot con modelo auto o selección manual." : "Requiere GitHub conectado.", disabled: !githubConnected },
+    { id: "google" as Provider, label: "Google AI Studio", description: googleConnected ? "Gemini con login de Google." : "Conectá Google para usar Gemini." },
+    ...(isIPhone ? [{ id: "apple" as Provider, label: "Apple Intelligence", description: "Usa el flujo nativo del iPhone." }] : []),
+  ], [chatGPTConnected, githubConnected, googleConnected, isIPhone]);
   const supervisorAttachments = pendingAttachments[active?.id || ""] || [];
   const chatOnlyProvider = active?.provider === "google" || active?.provider === "apple";
   const providerReady = active?.provider === "copilot" ? githubConnected : active?.provider === "google" ? googleConnected : active?.provider === "apple" ? isIPhone : chatGPTConnected;
@@ -392,6 +422,20 @@ export default function SupervisorWorkspace() {
           : active.mode === "pr" && !githubConnected
             ? "Conectá GitHub para crear un Pull Request."
             : "";
+
+  useEffect(() => {
+    if (!active || !models.length) return;
+    const preferred = models.find((m) => m.id === active.model) || models.find((m) => m.isDefault) || models[0];
+    const efforts = preferred.reasoningEfforts ?? [];
+    const effort = efforts.length
+      ? efforts.some((item) => item.id === active.reasoningEffort)
+        ? active.reasoningEffort
+        : preferred.defaultReasoningEffort || efforts[0].id
+      : "";
+    if (preferred.id !== active.model || effort !== active.reasoningEffort) {
+      updateChat(active.id, (chat) => ({ ...chat, model: preferred.id, reasoningEffort: effort }));
+    }
+  }, [active?.id, active?.model, active?.provider, active?.reasoningEffort, models]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [active?.messages.length, active?.id]);
   useEffect(() => { agentEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [selectedAgentThread?.messages.length, selectedAgentName]);
@@ -799,8 +843,40 @@ export default function SupervisorWorkspace() {
     }
   }
 
+  function modelState(provider: Provider, requestedModel = "") {
+    const source = provider === "copilot"
+      ? copilotModels
+      : provider === "google"
+        ? GOOGLE_AI_STUDIO_MODELS
+        : provider === "apple"
+          ? [APPLE_INTELLIGENCE_MODEL]
+          : chatGPTModels;
+    const model = source.find((item) => item.id === requestedModel) || source.find((item) => item.isDefault) || source[0];
+    const efforts = model?.reasoningEfforts ?? [];
+    return {
+      model: model?.id || "",
+      reasoningEffort: efforts.length ? model?.defaultReasoningEffort || efforts[0].id : "",
+    };
+  }
+  function chooseProvider(provider: Provider) {
+    const next = modelState(provider);
+    updateChat(active.id, (chat) => ({
+      ...chat,
+      provider,
+      mode: provider === "apple" || provider === "google" ? "chat" : chat.mode,
+      repo: provider === "apple" || provider === "google" ? "" : chat.repo,
+      ...next,
+    }));
+  }
+  function chooseModel(modelId: string) {
+    const next = modelState(active.provider, modelId);
+    updateChat(active.id, (chat) => ({ ...chat, ...next }));
+  }
+  function chooseReasoningEffort(reasoningEffort: string) {
+    updateChat(active.id, (chat) => ({ ...chat, reasoningEffort }));
+  }
   function createChat() {
-    const chat = defaultChat(); const useCopilot = Boolean(githubConnected && !chatGPTConnected); chat.provider = useCopilot ? "copilot" : "chatgpt"; chat.model = useCopilot ? "auto" : "";
+    const chat = defaultChat(); const useCopilot = Boolean(githubConnected && !chatGPTConnected); chat.provider = useCopilot ? "copilot" : "chatgpt"; Object.assign(chat, modelState(chat.provider));
     setChats((current) => [chat, ...current]); setActiveId(chat.id); setMobileListOpen(false); setSettingsOpen(true);
   }
   function openAgent(name: string) { setSelectedAgentName(name); setMobileAgentsOpen(true); updateAgentThread(active.id, name, (thread) => ({ ...thread, unread: 0 })); }
@@ -844,9 +920,25 @@ export default function SupervisorWorkspace() {
           </section>
           <section className={s.section}>
             <div className={s.sectionTitle}>IA</div>
-            <div className={s.grid}>
-              <label>Proveedor<select value={active.provider} onChange={(e) => updateChat(active.id, (chat) => { const provider = e.target.value as Provider; return { ...chat, provider, mode: provider === "apple" || provider === "google" ? "chat" : chat.mode, repo: provider === "apple" || provider === "google" ? "" : chat.repo, model: provider === "copilot" ? "auto" : provider === "google" ? GOOGLE_AI_STUDIO_MODELS[0].id : provider === "apple" ? APPLE_INTELLIGENCE_MODEL.id : "" }; })}><option value="chatgpt">ChatGPT / Codex</option><option value="copilot" disabled={!githubConnected}>GitHub Copilot</option><option value="google">Google AI Studio</option>{isIPhone && <option value="apple">Apple Intelligence</option>}</select></label>
-              <label>Modelo<select value={active.model} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, model: e.target.value }))}>{models.map((m) => <option key={m.id} value={m.id}>{m.displayName || m.name || m.id}</option>)}</select></label>
+            <div className={s.modelPicker}>
+              <div>
+                <div className={s.pickerLabel}>Proveedor</div>
+                <div className={s.providerCards}>{providerOptions.map((option) => <button type="button" key={option.id} disabled={option.disabled} className={`${s.providerCard} ${active.provider === option.id ? s.providerCardActive : ""}`} onClick={() => chooseProvider(option.id)}>
+                  <span><strong>{option.label}</strong><small>{option.description}</small></span>
+                  <b>{active.provider === option.id ? "Seleccionado" : option.disabled ? "No disponible" : "Elegir"}</b>
+                </button>)}</div>
+              </div>
+              <div>
+                <div className={s.pickerLabel}>Modelo</div>
+                {models.length ? <div className={s.modelCards}>{models.map((model) => <button type="button" key={model.id} className={`${s.modelCard} ${active.model === model.id ? s.modelCardActive : ""}`} onClick={() => chooseModel(model.id)}>
+                  <span><strong>{modelLabel(model)}</strong><small>{modelCaption(model)}</small></span>
+                  {model.isDefault && <em>Default</em>}
+                </button>)}</div> : <div className={s.emptyModelState}>Conectá el proveedor para ver modelos disponibles.</div>}
+                {reasoningEfforts.length > 0 ? <div className={s.effortPanel}>
+                  <div className={s.effortHeader}><strong>Esfuerzo</strong><small>Disponible para {modelLabel(selectedModel!)}</small></div>
+                  <div className={s.effortOptions}>{reasoningEfforts.map((effort) => <button type="button" key={effort.id} className={selectedReasoningEffort === effort.id ? s.effortActive : ""} onClick={() => chooseReasoningEffort(effort.id)}>{effortLabel(effort.id)}</button>)}</div>
+                </div> : selectedModel && <div className={s.modelHint}>Este modelo usa esfuerzo automático.</div>}
+              </div>
             </div>
           </section>
           {active.mode !== "chat" && <section className={s.section}><div className={s.sectionTitle}>Repositorio</div><div className={s.repoRow}><select value={active.repo} onChange={(e) => setRepo(e.target.value)}><option value="">Elegí un repo…</option>{repos.map((repo) => <option key={repo.id} value={repo.fullName}>{repo.private ? "🔒 " : ""}{repo.fullName}</option>)}</select></div></section>}
