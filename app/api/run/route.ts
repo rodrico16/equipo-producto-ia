@@ -6,6 +6,7 @@ import { presentRuntimeError } from "@/lib/runtime-error";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 import { finishRun, getRun, startRun } from "@/lib/run-store";
 import { validateAttachments, writeRunAttachments, type RunAttachment } from "@/lib/run-attachments";
+import { GitHubPublicationAuthError, pushAuthFailure, apiAuthFailure } from "@/lib/github-publication-error";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -555,7 +556,12 @@ export async function POST(request: Request) {
           cwd: repoDir,
           env: { GH_PUSH_TOKEN: github.token, RUN_BRANCH: runBranch },
         });
-        if (push.exitCode !== 0) throw new Error(`Push failed: ${(await push.stderr()).slice(-1200)}`);
+        if (push.exitCode !== 0) {
+          const stderr = (await push.stderr()).slice(-1200);
+          const reason = pushAuthFailure(stderr);
+          if (reason) throw new GitHubPublicationAuthError("push", reason);
+          throw new Error(`Push failed: ${stderr}`);
+        }
 
         const prResponse = await fetch(`https://api.github.com/repos/${repo}/pulls`, {
           method: "POST",
@@ -587,6 +593,8 @@ export async function POST(request: Request) {
         });
         const pr = (await prResponse.json()) as { html_url?: string; number?: number; message?: string };
         if (!prResponse.ok || !pr.html_url) {
+          const reason = apiAuthFailure(prResponse.status, pr.message);
+          if (reason) throw new GitHubPublicationAuthError("pull_request", reason);
           throw new Error(`Branch pushed but PR creation failed: ${pr.message ?? prResponse.status}`);
         }
 
@@ -608,6 +616,9 @@ export async function POST(request: Request) {
       } catch (error) {
         const message = presentRuntimeError(error instanceof Error ? error.message : String(error), "La ejecución del equipo falló");
         finishRun(runId, runOwner, message);
+        if (error instanceof GitHubPublicationAuthError) {
+          controller.enqueue(line({ type: "auth.required", data: { provider: "github", message, stage: error.stage, reason: error.reason } }));
+        }
         controller.enqueue(line({
           type: "control.error",
           data: { message },
