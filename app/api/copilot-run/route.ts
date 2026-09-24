@@ -3,6 +3,7 @@ import { copilotRunnerSource } from "@/lib/copilot-runner-source";
 import { presentRuntimeError } from "@/lib/runtime-error";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 import { finishRun, getRun, startRun } from "@/lib/run-store";
+import { validateAttachments, writeRunAttachments, type RunAttachment } from "@/lib/run-attachments";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -15,6 +16,7 @@ type RunRequest = {
   model?: string;
   reasoningEffort?: string;
   prompt?: string;
+  attachments?: RunAttachment[];
 };
 type StreamEvent = {
   type?: string;
@@ -44,6 +46,10 @@ export async function POST(request: Request) {
   const repo = body.repo?.trim() || "";
 
   if (!prompt) return Response.json({ error: "Prompt is required" }, { status: 400 });
+  let attachments: RunAttachment[];
+  try { attachments = validateAttachments(body.attachments); }
+  catch (error) { return Response.json({ error: (error as Error).message }, { status: 400 }); }
+  if (attachments.some((file) => /\.(png|jpe?g|webp|gif)$/i.test(file.name))) return Response.json({ error: "Para analizar imágenes elegí ChatGPT / Codex." }, { status: 400 });
   if (mode === "draft" && !repoPattern.test(repo)) {
     return Response.json({ error: "Choose a repository first" }, { status: 400 });
   }
@@ -126,6 +132,7 @@ export async function POST(request: Request) {
           throw new Error(`Could not load agent catalog: ${(await agentsClone.stderr()).slice(-1000)}`);
         }
 
+        const attached = await writeRunAttachments(sandbox, attachments, runId);
         await sandbox.writeFiles([
           { path: "/tmp/copilot-runner.mjs", content: Buffer.from(copilotRunnerSource) },
           { path: "/tmp/package.json", content: Buffer.from(JSON.stringify({ type: "module", private: true })) },
@@ -150,7 +157,7 @@ export async function POST(request: Request) {
             COPILOT_MODEL: model,
             COPILOT_REASONING_EFFORT: reasoningEffort,
             COPILOT_MODE: mode,
-            COPILOT_TASK: prompt,
+            COPILOT_TASK: [prompt, attached.context].filter(Boolean).join("\n\n"),
             COPILOT_AGENT_DIR: "/tmp/equipo-producto-ia-agents/.codex/agents",
           },
         });

@@ -5,6 +5,7 @@ import { directAgentRunnerSource } from "@/lib/direct-agent-runner-source";
 import { presentRuntimeError } from "@/lib/runtime-error";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 import { finishRun, getRun, startRun } from "@/lib/run-store";
+import { validateAttachments, writeRunAttachments, type RunAttachment } from "@/lib/run-attachments";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -18,6 +19,7 @@ type RunRequest = {
   branch?: string;
   model?: string;
   reasoningEffort?: string;
+  attachments?: RunAttachment[];
 };
 type JsonRecord = Record<string, unknown>;
 
@@ -94,6 +96,10 @@ function emitCodexEvent(
 export async function POST(request: Request) {
   const body = (await request.json()) as RunRequest;
   const provider: Provider = body.provider === "copilot" ? "copilot" : "chatgpt";
+  let attachments: RunAttachment[];
+  try { attachments = validateAttachments(body.attachments); }
+  catch (error) { return Response.json({ error: (error as Error).message }, { status: 400 }); }
+  if (provider === "copilot" && attachments.some((file) => /\.(png|jpe?g|webp|gif)$/i.test(file.name))) return Response.json({ error: "Para analizar imágenes elegí ChatGPT / Codex." }, { status: 400 });
   const agentName = body.agentName?.trim() || "";
   const prompt = body.prompt?.trim() || "";
   const repo = body.repo?.trim() || "";
@@ -179,6 +185,8 @@ export async function POST(request: Request) {
           if (init.exitCode !== 0) throw new Error("Could not initialize specialist workspace");
         }
 
+        const attached = await writeRunAttachments(sandbox, attachments, runId);
+
         const agentsClone = await sandbox.runCommand("git", [
           "clone",
           "--depth",
@@ -208,7 +216,7 @@ export async function POST(request: Request) {
               COPILOT_GITHUB_TOKEN: github!.token,
               COPILOT_MODEL: model,
               COPILOT_REASONING_EFFORT: reasoningEffort,
-              COPILOT_TASK: prompt,
+              COPILOT_TASK: [prompt, attached.context].filter(Boolean).join("\n\n"),
               COPILOT_TARGET_AGENT: agentName,
               COPILOT_WORKDIR: cwd,
               COPILOT_AGENT_DIR: "/tmp/equipo-producto-ia-agents/.codex/agents",
@@ -263,11 +271,14 @@ export async function POST(request: Request) {
             "",
             "USER MESSAGE:",
             prompt,
+            attached.context,
           ].join("\n");
           const args = ["--sandbox", "read-only", "--ask-for-approval", "never"];
           if (model && model !== "auto") args.push("--model", model);
           if (reasoningEffort) args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
-          args.push("exec", "--json", specialistPrompt);
+          args.push("exec", "--json");
+          for (const image of attached.images) args.push("--image", image);
+          args.push(specialistPrompt);
 
           const command = await sandbox.runCommand({
             cmd: "bash",

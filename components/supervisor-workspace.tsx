@@ -34,11 +34,14 @@ type AgentDefinition = { name: string; displayName: string; description: string;
 type GitHubRepo = { id: number; fullName: string; private: boolean; defaultBranch: string; canPush: boolean };
 type StreamEvent = { type: string; agentId?: string; data?: Record<string, unknown> };
 type ActiveRun = { controller: AbortController; reader?: ReadableStreamDefaultReader<Uint8Array> };
+type Attachment = { name: string; type: string; data: string; size: number };
+type AttachmentLabel = { name: string; type: string };
 
 type ChatMessage = {
   id: string;
   kind: "user" | "agent" | "system" | "pr";
   text: string;
+  attachments?: AttachmentLabel[];
   at: number;
   agent?: string;
   displayName?: string;
@@ -183,6 +186,8 @@ export default function SupervisorWorkspace() {
   const [selectedAgentName, setSelectedAgentName] = useState("");
   const [connectionError, setConnectionError] = useState("");
   const [prQuickOpen, setPrQuickOpen] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<Record<string, Attachment[]>>({});
+  const [attachmentError, setAttachmentError] = useState("");
 
   const chatsRef = useRef<ChatThread[]>([]);
   const selectedAgentRef = useRef("");
@@ -193,6 +198,8 @@ export default function SupervisorWorkspace() {
   const agentEndRef = useRef<HTMLDivElement>(null);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   const settingsCloseRef = useRef<HTMLButtonElement>(null);
+  const supervisorFileRef = useRef<HTMLInputElement>(null);
+  const agentFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { chatsRef.current = chats; }, [chats]);
   // Closing the mobile browser must not explicitly cancel an in-flight server run.
@@ -303,8 +310,13 @@ export default function SupervisorWorkspace() {
   const selectedModel = models.find((m) => m.id === active?.model);
   const githubConnected = Boolean(session?.githubConnected);
   const chatGPTConnected = chatGPT.status === "connected";
-  const canSendSupervisor = Boolean(active?.draft.trim() && (active.provider === "copilot" ? githubConnected : chatGPTConnected) && (active.mode === "chat" || active.repo) && (active.mode !== "pr" || githubConnected));
-  const sendHint = !active?.draft.trim()
+  const supervisorAttachments = pendingAttachments[active?.id || ""] || [];
+  const canSendSupervisor = Boolean((active?.draft.trim() || supervisorAttachments.length) && (!active?.running || !supervisorAttachments.length) && (active.provider === "copilot" ? githubConnected : chatGPTConnected) && (active.mode === "chat" || active.repo) && (active.mode !== "pr" || githubConnected) && (active.provider !== "copilot" || !supervisorAttachments.some((file) => file.type.startsWith("image/"))));
+  const sendHint = active?.running && supervisorAttachments.length
+    ? "Esperá a que termine el turno para enviar adjuntos."
+    : active?.provider === "copilot" && supervisorAttachments.some((file) => file.type.startsWith("image/"))
+      ? "Para analizar imágenes elegí ChatGPT / Codex."
+    : !active?.draft.trim() && !supervisorAttachments.length
     ? "Escribí un mensaje para continuar."
     : active.provider === "copilot" && !githubConnected
       ? "Conectá GitHub para usar Copilot."
@@ -465,9 +477,9 @@ export default function SupervisorWorkspace() {
     }).join("\n\n").slice(0, 16000);
   }
 
-  async function startSupervisorRun(chatId: string, explicitPrompt?: string, alreadyAppended = false) {
+  async function startSupervisorRun(chatId: string, explicitPrompt?: string, alreadyAppended = false, attachments: Attachment[] = []) {
     const thread = chatsRef.current.find((chat) => chat.id === chatId); if (!thread || thread.running) return;
-    const prompt = (explicitPrompt ?? thread.draft).trim(); if (!prompt) return;
+    const prompt = (explicitPrompt ?? thread.draft).trim() || (attachments.length ? "Analizá los archivos adjuntos." : ""); if (!prompt) return;
     const runId = uid("run");
     const controller = new AbortController();
     activeRunsRef.current.set(runId, { controller });
@@ -475,14 +487,14 @@ export default function SupervisorWorkspace() {
     const history = thread.messages.filter((m) => m.kind === "user" || m.kind === "agent").slice(-12).map((m) => `${m.kind === "user" ? "USUARIO" : "SUPERVISOR"}: ${m.text}`).join("\n\n");
     const specialist = specialistContext(thread);
     const requestPrompt = [history ? `CONTEXTO DEL CHAT CON SUPERVISOR:\n${history}` : "", specialist ? `INTERVENCIONES DIRECTAS CON ESPECIALISTAS:\n${specialist}` : "", `NUEVO PEDIDO DEL USUARIO:\n${prompt}`].filter(Boolean).join("\n\n");
-    updateChat(chatId, (chat) => ({ ...chat, title: chat.title === "Nuevo chat" ? titleFrom(prompt) : chat.title, draft: "", running: true, runId, status: "Supervisor está preparando el turno…", error: "", updatedAt: Date.now(), messages: alreadyAppended ? chat.messages : [...chat.messages, { id: `${runId}:user`, kind: "user", text: prompt, at: Date.now() } as ChatMessage].slice(-220) }));
+    updateChat(chatId, (chat) => ({ ...chat, title: chat.title === "Nuevo chat" ? titleFrom(prompt) : chat.title, draft: "", running: true, runId, status: "Supervisor está preparando el turno…", error: "", updatedAt: Date.now(), messages: alreadyAppended ? chat.messages : [...chat.messages, { id: `${runId}:user`, kind: "user", text: prompt, attachments: attachments.map(({ name, type }) => ({ name, type })), at: Date.now() } as ChatMessage].slice(-220) }));
     let responseStarted = false;
     let terminalEvent = false;
     try {
       const endpoint = thread.mode === "pr" ? "/api/run" : thread.provider === "copilot" ? "/api/copilot-run" : "/api/chat-run";
       const payload = thread.mode === "pr"
-        ? { repo: thread.repo, branch: thread.branch, provider: thread.provider, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt }
-        : { mode: thread.mode, repo: thread.repo, branch: thread.branch, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt };
+        ? { repo: thread.repo, branch: thread.branch, provider: thread.provider, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt, attachments }
+        : { mode: thread.mode, repo: thread.repo, branch: thread.branch, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt, attachments };
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Run-Id": runId },
@@ -518,6 +530,7 @@ export default function SupervisorWorkspace() {
     } catch (error) {
       const interrupted = controller.signal.aborted;
       const message = interrupted ? "La ejecución fue interrumpida." : error instanceof Error ? error.message : String(error);
+      if (attachments.length && !responseStarted) setPendingAttachments((current) => ({ ...current, [chatId]: [...attachments, ...(current[chatId] || [])] }));
       if (responseStarted && !interrupted && !terminalEvent) {
         updateChat(chatId, (chat) => ({ ...chat, running: true, status: "Consultando estado del turno…", error: "", updatedAt: Date.now() }));
       } else {
@@ -530,27 +543,32 @@ export default function SupervisorWorkspace() {
   }
 
   function sendSupervisor() {
-    if (!active || !active.draft.trim() || !canSendSupervisor) return;
-    const text = active.draft.trim();
+    if (!active || !canSendSupervisor) return;
+    const attachments = supervisorAttachments;
+    const text = active.draft.trim() || "Analizá los archivos adjuntos.";
     if (active.running) {
       const queued: QueuedPrompt = { id: uid("queued"), text, at: Date.now() };
       updateChat(active.id, (chat) => ({ ...chat, draft: "", queuedSupervisor: [...chat.queuedSupervisor, queued], messages: [...chat.messages, { id: queued.id, kind: "user", text, at: queued.at } as ChatMessage].slice(-220), updatedAt: Date.now() })); return;
     }
-    void startSupervisorRun(active.id, text);
+    setPendingAttachments((current) => ({ ...current, [active.id]: [] }));
+    setAttachmentError("");
+    void startSupervisorRun(active.id, text, false, attachments);
   }
 
   async function startAgentRun(chatId: string, name: string) {
     const parent = chatsRef.current.find((chat) => chat.id === chatId); const thread = parent?.agentThreads[name];
-    if (!parent || !thread || thread.status === "running" || !thread.draft.trim()) return;
-    const prompt = thread.draft.trim(); const runId = uid("agent-run");
+    const attachments = pendingAttachments[`${chatId}:${name}`] || [];
+    if (!parent || !thread || thread.status === "running" || (!thread.draft.trim() && !attachments.length)) return;
+    const prompt = thread.draft.trim() || "Analizá los archivos adjuntos."; const runId = uid("agent-run");
+    setPendingAttachments((current) => ({ ...current, [`${chatId}:${name}`]: [] }));
     const controller = new AbortController();
     activeRunsRef.current.set(runId, { controller });
     const supervisorContext = parent.messages.filter((m) => m.kind === "user" || m.kind === "agent").slice(-8).map((m) => `${m.kind === "user" ? "USUARIO" : "SUPERVISOR"}: ${m.text}`).join("\n\n");
     const directHistory = thread.messages.filter((m) => m.kind === "user" || m.kind === "agent").slice(-10).map((m) => `${m.kind === "user" ? "USUARIO" : thread.displayName}: ${m.text}`).join("\n\n");
     const requestPrompt = [supervisorContext ? `CONTEXTO DEL SUPERVISOR:\n${supervisorContext}` : "", directHistory ? `HISTORIAL DE ESTE HILO:\n${directHistory}` : "", `NUEVO AJUSTE DEL USUARIO:\n${prompt}`].filter(Boolean).join("\n\n");
-    updateAgentThread(chatId, name, (current) => ({ ...current, draft: "", status: "running", error: "", unread: 0, messages: [...current.messages, { id: `${runId}:user`, kind: "user", text: prompt, at: Date.now() } as ChatMessage].slice(-140), updatedAt: Date.now() }));
+    updateAgentThread(chatId, name, (current) => ({ ...current, draft: "", status: "running", error: "", unread: 0, messages: [...current.messages, { id: `${runId}:user`, kind: "user", text: prompt, attachments: attachments.map(({ name, type }) => ({ name, type })), at: Date.now() } as ChatMessage].slice(-140), updatedAt: Date.now() }));
     try {
-      const response = await fetch("/api/agent-run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: parent.provider, agentName: name, prompt: requestPrompt, repo: parent.repo, branch: parent.branch, model: parent.model, reasoningEffort: parent.reasoningEffort }), signal: controller.signal });
+      const response = await fetch("/api/agent-run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: parent.provider, agentName: name, prompt: requestPrompt, repo: parent.repo, branch: parent.branch, model: parent.model, reasoningEffort: parent.reasoningEffort, attachments }), signal: controller.signal });
       if (!response.ok || !response.body) throw new Error((await response.json().catch(() => ({}))).error || `HTTP ${response.status}`);
       const reader = response.body.getReader();
       activeRunsRef.current.get(runId)!.reader = reader;
@@ -574,6 +592,7 @@ export default function SupervisorWorkspace() {
     } catch (error) {
       const interrupted = controller.signal.aborted;
       const message = interrupted ? "La ejecución fue interrumpida." : error instanceof Error ? error.message : String(error);
+      if (attachments.length) setPendingAttachments((current) => ({ ...current, [`${chatId}:${name}`]: [...attachments, ...(current[`${chatId}:${name}`] || [])] }));
       updateAgentThread(chatId, name, (current) => ({ ...current, status: "error", error: message, updatedAt: Date.now() }));
       appendAgent(chatId, name, { id: uid("agent-error"), kind: "system", text: message, tone: "bad", at: Date.now() }, true);
     } finally {
@@ -587,6 +606,55 @@ export default function SupervisorWorkspace() {
     if (event.type === "tool.completed") { const failed = data.success === false; const toolName = asString(data.toolName) || "una herramienta"; appendAgent(chatId, name, { id: uid(failed ? "direct-tool-error" : "direct-tool-done"), kind: "system", text: failed ? `Herramienta de ${displayName(name)} falló` : `${displayName(name)} terminó ${toolName}`, tone: failed ? "bad" : "good", tool: { name: toolName, status: failed ? "error" : "success" }, at: Date.now() }, failed); return; }
     if (event.type === "agent.delta" || event.type === "agent.message") { const chunk = asString(data.content); if (!chunk) return; upsertAgentReply(chatId, name, `${runId}:${asString(data.messageId) || name}`, chunk, event.type === "agent.delta", event.type === "agent.message"); return; }
     if (event.type === "control.error" || event.type === "run.failed") { const message = asString(data.message) || "El especialista falló"; updateAgentThread(chatId, name, (thread) => ({ ...thread, status: "error", error: message, updatedAt: Date.now() })); }
+  }
+
+  async function attachFiles(key: string, files: FileList | null) {
+    if (!files?.length) return;
+    setAttachmentError("");
+    try {
+      const accepted: Attachment[] = [];
+      for (const file of Array.from(files)) {
+        let data: string;
+        let name = file.name;
+        let type = file.type;
+        if (file.type.startsWith("image/")) {
+          const url = URL.createObjectURL(file);
+          try {
+            const img = new Image();
+            img.src = url;
+            await img.decode();
+            const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.round(img.width * scale); canvas.height = Math.round(img.height * scale);
+            canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+            data = canvas.toDataURL("image/jpeg", 0.78).split(",")[1];
+            name = `${file.name.replace(/\.[^.]+$/, "")}.jpg`;
+            type = "image/jpeg";
+          } finally { URL.revokeObjectURL(url); }
+        } else {
+          data = (await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(",")[1]);
+            reader.onerror = () => reject(new Error("No se pudo leer el archivo."));
+            reader.readAsDataURL(file);
+          }));
+        }
+        const size = Math.floor(data.length * 3 / 4);
+        if (size > 2_500_000) throw new Error(`${file.name} supera el límite de 2,5 MB.`);
+        accepted.push({ name, type, data, size });
+      }
+      const existing = pendingAttachments[key] || [];
+      if (existing.length + accepted.length > 4 || [...existing, ...accepted].reduce((sum, file) => sum + file.size, 0) > 3_000_000) throw new Error("Máximo 4 archivos y 3 MB en total por mensaje.");
+      setPendingAttachments((current) => ({ ...current, [key]: [...(current[key] || []), ...accepted] }));
+    } catch (error) { setAttachmentError(error instanceof Error ? error.message : String(error)); }
+  }
+
+  function attachmentChips(key: string, files: Attachment[]) {
+    return files.length ? <div className={s.attachmentChips}>{files.map((file, index) => <span key={`${file.name}-${index}`}>{file.type.startsWith("image/") ? <img src={`data:${file.type};base64,${file.data}`} alt="" /> : "📄"} {file.name}<button type="button" aria-label={`Quitar ${file.name}`} onClick={() => setPendingAttachments((current) => ({ ...current, [key]: (current[key] || []).filter((_, i) => i !== index) }))}>×</button></span>)}</div> : null;
+  }
+
+  function messageAttachments(message: ChatMessage) {
+    return message.attachments?.length ? <div className={s.messageAttachments}>{message.attachments.map((file, index) => <span key={`${file.name}-${index}`}>{file.type.startsWith("image/") ? "🖼" : "📄"} {file.name}</span>)}</div> : null;
   }
 
   function renderToolGroups(messages: ChatMessage[], actor: string, renderMessage: (message: ChatMessage) => ReactNode) {
@@ -608,14 +676,14 @@ export default function SupervisorWorkspace() {
 
   function renderSupervisorMessage(message: ChatMessage) {
     if (message.kind === "system") return <div key={message.id} className={`${s.system} ${message.tone === "good" ? s.systemGood : message.tone === "bad" ? s.systemBad : ""}`}>{message.text}</div>;
-    if (message.kind === "user") return <div className={`${s.row} ${s.userRow}`} key={message.id}><article className={`${s.bubble} ${s.userBubble}`}><div>{message.text}</div><time>{time(message.at)}</time></article></div>;
+    if (message.kind === "user") return <div className={`${s.row} ${s.userRow}`} key={message.id}><article className={`${s.bubble} ${s.userBubble}`}><div>{message.text}</div>{messageAttachments(message)}<time>{time(message.at)}</time></article></div>;
     if (message.kind === "pr" && message.pullRequest) return <div className={`${s.row} ${s.agentRow}`} key={message.id}><span className={s.messageAvatar}>S</span><article className={`${s.bubble} ${s.agentBubble} ${s.prMessage}`}><div className={s.author}><strong>Supervisor</strong><span>Pull Request</span></div><div>{message.text}</div><a href={message.pullRequest.url} target="_blank" rel="noreferrer">{message.pullRequest.repo || message.pullRequest.url} {message.pullRequest.number ? `#${message.pullRequest.number}` : "↗"}</a>{message.pullRequest.branch && <small>{message.pullRequest.branch}</small>}{message.pullRequest.diffStat && <pre>{message.pullRequest.diffStat}</pre>}<time>{time(message.at)}</time></article></div>;
     return <div className={`${s.row} ${s.agentRow}`} key={message.id}><span className={s.messageAvatar}>S</span><article className={`${s.bubble} ${s.agentBubble}`}><div className={s.author}><strong>Supervisor</strong></div><div className={s.aiResponse}><MessageResponse>{message.text}</MessageResponse></div><time>{time(message.at)}</time></article></div>;
   }
 
   function renderAgentMessage(message: ChatMessage, thread: AgentThread) {
     if (message.kind === "system") return <div key={message.id} className={`${s.agentSystem} ${message.tone === "bad" ? s.agentSystemBad : ""}`}>{message.text}</div>;
-    if (message.kind === "user") return <div key={message.id} className={s.agentUserBubble}>{message.text}<time>{time(message.at)}</time></div>;
+    if (message.kind === "user") return <div key={message.id} className={s.agentUserBubble}>{message.text}{messageAttachments(message)}<time>{time(message.at)}</time></div>;
     return <div key={message.id} className={s.agentReply}><strong>{thread.displayName}</strong><MessageResponse>{message.text}</MessageResponse><time>{time(message.at)}</time></div>;
   }
 
@@ -642,12 +710,12 @@ export default function SupervisorWorkspace() {
         <header className={s.chatHeader}><button aria-label="Volver a chats" className={s.mobileBack} onClick={() => setMobileListOpen(true)}>‹</button><span className={s.supervisorAvatar}>S</span><div className={s.headerCopy}><strong>Supervisor</strong><span>{active.title} · {active.running ? active.status : "listo"}</span></div><button aria-label="Abrir chats de agentes" className={s.agentToggle} onClick={() => setMobileAgentsOpen(true)}>{parallelThreads.length ? `${parallelThreads.length} agentes` : "Agentes"}</button><button ref={settingsTriggerRef} aria-label="Abrir configuración" aria-expanded={settingsOpen} aria-controls="supervisor-settings" className={s.iconButton} onClick={() => setSettingsOpen(true)}>⚙</button></header>
         <div className={s.contextBar}><span>{modeLabel(active.mode)}</span><span>{active.provider === "copilot" ? "Copilot" : "ChatGPT"} · {selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</span>{active.repo && <span>repo · {active.repo}</span>}{active.queuedSupervisor.length > 0 && <span className={s.queueChip}>{active.queuedSupervisor.length} en cola</span>}{active.pullRequests.length > 0 && <button type="button" className={s.prQuickButton} aria-label={`Abrir lista de ${active.pullRequests.length} Pull Requests`} aria-expanded={prQuickOpen} onClick={() => setPrQuickOpen((open) => !open)}>PRs · {active.pullRequests.length}</button>}</div>
         <div className={s.messages}><div className={s.stack}>{prQuickOpen && active.pullRequests.length > 0 && <section className={s.prQuickList} aria-label="Lista rápida de Pull Requests"><div className={s.prQuickHeader}><strong>Pull Requests del chat</strong><button type="button" aria-label="Cerrar lista de Pull Requests" onClick={() => setPrQuickOpen(false)}>×</button></div>{active.pullRequests.slice().reverse().map((pr) => <a className={s.prQuickItem} key={pr.url} href={pr.url} target="_blank" rel="noreferrer"><span>{pr.repo || pr.url} {pr.number ? `#${pr.number}` : "↗"}</span><small>{pr.branch || "Abrir en GitHub"}</small></a>)}</section>}{active.messages.length === 0 && <div className={s.welcome}><div className={s.welcomeAvatar}>S</div><h1>Hablá con Supervisor</h1><p>Supervisor coordina el equipo. Los especialistas aparecen a la derecha como chats paralelos.</p></div>}{renderToolGroups(active.messages, "Supervisor", renderSupervisorMessage)}{active.pullRequests.length === 0 && active.diffStat && <div className={s.delivery}><strong>Cambios preparados</strong><pre>{active.diffStat}</pre></div>}<div ref={endRef} /></div></div>
-        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>{active.status === "Estado por confirmar" ? "Estado del turno incierto:" : "Ocurrió un error:"}</strong> {active.error}</div>}<div className={s.composer}><button aria-label="Abrir configuración" className={s.plus} onClick={() => setSettingsOpen(true)}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby={active.draft.trim() && sendHint ? "supervisor-send-hint" : undefined} value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Otra instrucción (queda en cola)…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button></div>{active.draft.trim() && sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</footer>
+        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>{active.status === "Estado por confirmar" ? "Estado del turno incierto:" : "Ocurrió un error:"}</strong> {active.error}</div>}{attachmentChips(active.id, supervisorAttachments)}<div className={s.composer}><input ref={supervisorFileRef} className={s.hiddenFile} type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.html,.docx,.xlsx,.zip" onChange={(event) => { void attachFiles(active.id, event.target.files); event.target.value = ""; }} /><button type="button" aria-label="Adjuntar imágenes o archivos" title="Adjuntar imágenes o archivos" className={s.plus} onClick={() => supervisorFileRef.current?.click()}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby={sendHint ? "supervisor-send-hint" : undefined} value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Otra instrucción (queda en cola)…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button></div>{attachmentError && <small className={s.attachmentError} role="alert">{attachmentError}</small>}{sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</footer>
       </section>
 
       <aside className={s.agentRail}>
         <div className={s.agentRailHeader}>{selectedAgentThread ? <button aria-label="Volver a la lista de especialistas" onClick={() => setSelectedAgentName("")}>‹</button> : <span className={s.railMark}>⇶</span>}<div><strong>{selectedAgentThread ? selectedAgentThread.displayName : "Chats paralelos"}</strong><span>{selectedAgentThread ? "Especialista · solo lectura" : `${parallelThreads.length} especialistas activos`}</span></div><button aria-label="Cerrar chats de agentes" className={s.mobileAgentClose} onClick={() => setMobileAgentsOpen(false)}>×</button></div>
-        {!selectedAgentThread ? <div className={s.agentList}>{parallelThreads.length === 0 && <div className={s.agentEmpty}><div>⇶</div><strong>Todavía no hay especialistas</strong><p>Cuando Supervisor delegue trabajo, cada agente aparece acá.</p></div>}{parallelThreads.map((thread) => { const last = [...thread.messages].reverse().find((m) => m.text); return <button className={s.agentListItem} key={thread.name} onClick={() => openAgent(thread.name)}><span className={s.agentAvatar}>{thread.displayName[0]?.toUpperCase() || "A"}</span><span><strong>{thread.displayName}</strong><small>{thread.assignment || last?.text || thread.description}</small></span><span className={`${s.agentStatus} ${thread.status === "running" ? s.agentRunning : thread.status === "error" ? s.agentError : s.agentDone}`}>{thread.status === "running" ? "●" : thread.status === "error" ? "!" : thread.status === "completed" ? "✓" : ""}{thread.unread > 0 && <b>{thread.unread}</b>}</span></button>; })}</div> : <div className={s.agentConversation}><div className={s.agentNotice}>Pedido actual: {selectedAgentThread.assignment || "Aún no hay una consigna registrada."}<br />Este hilo no modifica archivos. Tus ajustes se agregan al contexto del próximo turno de Supervisor.</div><div className={s.agentMessages}>{selectedAgentThread.description && <div className={s.agentSystem}>Rol · {selectedAgentThread.description}</div>}{renderToolGroups(selectedAgentThread.messages, selectedAgentThread.displayName, (message) => renderAgentMessage(message, selectedAgentThread))}<div ref={agentEndRef} /></div><div className={s.agentComposer}><textarea aria-label={`Ajustar pedido a ${selectedAgentThread.displayName}`} value={selectedAgentThread.draft} onChange={(e) => updateAgentThread(active.id, selectedAgentThread.name, (thread) => ({ ...thread, draft: e.target.value }))} placeholder={`Ajustar pedido a ${selectedAgentThread.displayName}…`} disabled={selectedAgentThread.status === "running"} rows={1} /><button aria-label="Enviar ajuste al especialista" onClick={() => void startAgentRun(active.id, selectedAgentThread.name)} disabled={!selectedAgentThread.draft.trim() || selectedAgentThread.status === "running"}>➤</button></div></div>}
+        {!selectedAgentThread ? <div className={s.agentList}>{parallelThreads.length === 0 && <div className={s.agentEmpty}><div>⇶</div><strong>Todavía no hay especialistas</strong><p>Cuando Supervisor delegue trabajo, cada agente aparece acá.</p></div>}{parallelThreads.map((thread) => { const last = [...thread.messages].reverse().find((m) => m.text); return <button className={s.agentListItem} key={thread.name} onClick={() => openAgent(thread.name)}><span className={s.agentAvatar}>{thread.displayName[0]?.toUpperCase() || "A"}</span><span><strong>{thread.displayName}</strong><small>{thread.assignment || last?.text || thread.description}</small></span><span className={`${s.agentStatus} ${thread.status === "running" ? s.agentRunning : thread.status === "error" ? s.agentError : s.agentDone}`}>{thread.status === "running" ? "●" : thread.status === "error" ? "!" : thread.status === "completed" ? "✓" : ""}{thread.unread > 0 && <b>{thread.unread}</b>}</span></button>; })}</div> : <div className={s.agentConversation}><div className={s.agentNotice}>Pedido actual: {selectedAgentThread.assignment || "Aún no hay una consigna registrada."}<br />Este hilo no modifica archivos. Tus ajustes se agregan al contexto del próximo turno de Supervisor.</div><div className={s.agentMessages}>{selectedAgentThread.description && <div className={s.agentSystem}>Rol · {selectedAgentThread.description}</div>}{renderToolGroups(selectedAgentThread.messages, selectedAgentThread.displayName, (message) => renderAgentMessage(message, selectedAgentThread))}<div ref={agentEndRef} /></div><div className={s.agentComposer}><input ref={agentFileRef} className={s.hiddenFile} type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.html,.docx,.xlsx,.zip" onChange={(event) => { void attachFiles(`${active.id}:${selectedAgentThread.name}`, event.target.files); event.target.value = ""; }} /><button type="button" aria-label="Adjuntar archivo al especialista" className={s.attachButton} onClick={() => agentFileRef.current?.click()} disabled={selectedAgentThread.status === "running"}>＋</button><div className={s.agentInput}>{attachmentChips(`${active.id}:${selectedAgentThread.name}`, pendingAttachments[`${active.id}:${selectedAgentThread.name}`] || [])}<textarea aria-label={`Ajustar pedido a ${selectedAgentThread.displayName}`} value={selectedAgentThread.draft} onChange={(e) => updateAgentThread(active.id, selectedAgentThread.name, (thread) => ({ ...thread, draft: e.target.value }))} placeholder={`Ajustar pedido a ${selectedAgentThread.displayName}…`} disabled={selectedAgentThread.status === "running"} rows={1} />{attachmentError && <small className={s.attachmentError} role="alert">{attachmentError}</small>}{active.provider === "copilot" && (pendingAttachments[`${active.id}:${selectedAgentThread.name}`] || []).some((file) => file.type.startsWith("image/")) && <small className={s.attachmentError}>Para analizar imágenes elegí ChatGPT / Codex.</small>}</div><button aria-label="Enviar ajuste al especialista" onClick={() => void startAgentRun(active.id, selectedAgentThread.name)} disabled={(!selectedAgentThread.draft.trim() && !(pendingAttachments[`${active.id}:${selectedAgentThread.name}`] || []).length) || selectedAgentThread.status === "running" || (active.provider === "copilot" && (pendingAttachments[`${active.id}:${selectedAgentThread.name}`] || []).some((file) => file.type.startsWith("image/")))}>➤</button></div></div>}
       </aside>
 
       {settingsOpen && <><button aria-label="Cerrar configuración" className={s.settingsBackdrop} onClick={() => setSettingsOpen(false)} /><aside id="supervisor-settings" className={s.settings} role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className={s.sheetHandle} /><div className={s.settingsHeader}><div><strong id="settings-title">Configuración de Supervisor</strong><span>Proveedor, modelo, repo y entrega.</span></div><button ref={settingsCloseRef} aria-label="Cerrar configuración" className={s.iconButton} onClick={() => setSettingsOpen(false)}>×</button></div><section className={s.section}><div className={s.sectionTitle}>Modo</div><div className={s.modeGrid}>{(["chat","draft","pr"] as ChatMode[]).map((mode) => <button key={mode} className={active.mode === mode ? s.modeActive : ""} onClick={() => updateChat(active.id, (chat) => ({ ...chat, mode, repo: mode === "chat" ? "" : chat.repo }))}><strong>{modeLabel(mode)}</strong></button>)}</div></section><section className={s.section}><div className={s.sectionTitle}>IA</div><div className={s.grid}><label>Proveedor<select value={active.provider} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, provider: e.target.value as Provider, model: e.target.value === "copilot" ? "auto" : chat.model }))}><option value="chatgpt">ChatGPT / Codex</option><option value="copilot" disabled={!githubConnected}>GitHub Copilot</option></select></label><label>Modelo<select value={active.model} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, model: e.target.value }))}>{models.map((m) => <option key={m.id} value={m.id}>{m.displayName || m.name || m.id}</option>)}</select></label></div></section>{active.mode !== "chat" && <section className={s.section}><div className={s.sectionTitle}>Repositorio</div><div className={s.repoRow}><select value={active.repo} onChange={(e) => setRepo(e.target.value)}><option value="">Elegí un repo…</option>{repos.map((repo) => <option key={repo.id} value={repo.fullName}>{repo.private ? "🔒 " : ""}{repo.fullName}</option>)}</select></div></section>}<section className={s.section}><div className={s.sectionTitle}>Conexiones</div><div className={s.connection}><span className={s.gptLogo}>GPT</span><div><strong>{chatGPTConnected ? "ChatGPT conectado" : "ChatGPT"}</strong><small>{chatGPT.planType || "Codex"}</small></div>{chatGPTConnected ? <button onClick={() => fetch("/api/chatgpt/logout", { method: "POST" }).then(() => setChatGPT({ status: "disconnected" }))}>Salir</button> : <button onClick={() => fetch("/api/chatgpt/login", { method: "POST" }).then((r) => r.json()).then((body) => setChatGPT(body as ChatGPTState)).catch((error) => setConnectionError(String(error)))}>Conectar</button>}</div><div className={s.connection}><span className={s.ghLogo}>GH</span><div><strong>{githubConnected ? `@${session.user?.login}` : "GitHub"}</strong><small>Repos + Copilot</small></div>{!githubConnected && <a href="/api/auth/github">Conectar</a>}</div>{connectionError && <div className={s.formError}>{connectionError}</div>}</section></aside></>}

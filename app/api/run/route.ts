@@ -5,6 +5,7 @@ import { copilotRunnerSource } from "@/lib/copilot-runner-source";
 import { presentRuntimeError } from "@/lib/runtime-error";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 import { finishRun, getRun, startRun } from "@/lib/run-store";
+import { validateAttachments, writeRunAttachments, type RunAttachment } from "@/lib/run-attachments";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -17,6 +18,7 @@ type RunRequest = {
   reasoningEffort?: string;
   prompt?: string;
   publicationMode?: "pr";
+  attachments?: RunAttachment[];
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -195,6 +197,10 @@ export async function POST(request: Request) {
   if (!prompt) {
     return Response.json({ error: "Prompt is required" }, { status: 400 });
   }
+  let attachments: RunAttachment[];
+  try { attachments = validateAttachments(body.attachments); }
+  catch (error) { return Response.json({ error: (error as Error).message }, { status: 400 }); }
+  if (provider === "copilot" && attachments.some((file) => /\.(png|jpe?g|webp|gif)$/i.test(file.name))) return Response.json({ error: "Para analizar imágenes elegí ChatGPT / Codex." }, { status: 400 });
 
   let runOwner = "";
   let runId = request.headers.get("x-run-id") || "";
@@ -314,6 +320,8 @@ export async function POST(request: Request) {
           repoDir = repo.split("/")[1];
         }
 
+        const attached = await writeRunAttachments(sandbox, attachments, runId);
+
         await sandbox.runCommand({
           cmd: "git",
           args: ["remote", "set-url", "origin", `https://github.com/${repo}.git`],
@@ -369,6 +377,7 @@ export async function POST(request: Request) {
             "Keep unrelated files untouched. Finish with a concise implementation and verification summary.",
             "",
             `USER OBJECTIVE:\n${prompt}`,
+            attached.context,
           ].join("\n");
 
           const args = ["--sandbox", "workspace-write", "--ask-for-approval", "never"];
@@ -376,7 +385,9 @@ export async function POST(request: Request) {
           if (reasoningEffort) {
             args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
           }
-          args.push("exec", "--json", teamPrompt);
+          args.push("exec", "--json");
+          for (const image of attached.images) args.push("--image", image);
+          args.push(teamPrompt);
 
           controller.enqueue(line({
             type: "control.status",
@@ -442,7 +453,7 @@ export async function POST(request: Request) {
             env: {
               COPILOT_GITHUB_TOKEN: github.token,
               COPILOT_MODEL: model,
-              COPILOT_TASK: prompt,
+              COPILOT_TASK: [prompt, attached.context].filter(Boolean).join("\n\n"),
               COPILOT_AGENT_DIR: "/tmp/equipo-producto-ia-agents/.codex/agents",
             },
           });
