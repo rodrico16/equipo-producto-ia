@@ -98,6 +98,8 @@ type ChatThread = {
   pullRequests: PullRequestRecord[];
   error: string;
   runId?: string;
+  retryPrompt?: string;
+  retryNeedsAttachments?: boolean;
 };
 
 type ToolArgs = Record<string, unknown>;
@@ -193,6 +195,7 @@ export default function SupervisorWorkspace() {
   const selectedAgentRef = useRef("");
   const agentMaps = useRef<Record<string, Record<string, string>>>({});
   const queueLocks = useRef(new Set<string>());
+  const retryLocks = useRef(new Set<string>());
   const activeRunsRef = useRef(new Map<string, ActiveRun>());
   const endRef = useRef<HTMLDivElement>(null);
   const agentEndRef = useRef<HTMLDivElement>(null);
@@ -460,6 +463,12 @@ export default function SupervisorWorkspace() {
     }
     if (event.type === "workspace.diff") { const diffStat = asString(data.diffStat); updateChat(chatId, (chat) => ({ ...chat, diffStat, updatedAt: Date.now() })); return; }
     if (event.type === "auth.required") {
+      if (data.provider === "github" && data.reason === "permission") {
+        updateChat(chatId, (chat) => {
+          const original = chat.messages.find((message) => message.id === `${runId}:user`);
+          return { ...chat, retryPrompt: original?.text || undefined, retryNeedsAttachments: Boolean(original?.attachments?.length) };
+        });
+      }
       window.dispatchEvent(new CustomEvent("epia:reauth-required", {
         detail: { provider: data.provider === "github" ? "github" : "chatgpt", message: asString(data.message) },
       }));
@@ -493,7 +502,7 @@ export default function SupervisorWorkspace() {
     const history = thread.messages.filter((m) => m.kind === "user" || m.kind === "agent").slice(-12).map((m) => `${m.kind === "user" ? "USUARIO" : "SUPERVISOR"}: ${m.text}`).join("\n\n");
     const specialist = specialistContext(thread);
     const requestPrompt = [history ? `CONTEXTO DEL CHAT CON SUPERVISOR:\n${history}` : "", specialist ? `INTERVENCIONES DIRECTAS CON ESPECIALISTAS:\n${specialist}` : "", `NUEVO PEDIDO DEL USUARIO:\n${prompt}`].filter(Boolean).join("\n\n");
-    updateChat(chatId, (chat) => ({ ...chat, title: chat.title === "Nuevo chat" ? titleFrom(prompt) : chat.title, draft: "", running: true, runId, status: "Supervisor está preparando el turno…", error: "", updatedAt: Date.now(), messages: alreadyAppended ? chat.messages : [...chat.messages, { id: `${runId}:user`, kind: "user", text: prompt, attachments: attachments.map(({ name, type }) => ({ name, type })), at: Date.now() } as ChatMessage].slice(-220) }));
+    updateChat(chatId, (chat) => ({ ...chat, title: chat.title === "Nuevo chat" ? titleFrom(prompt) : chat.title, draft: "", running: true, runId, status: "Supervisor está preparando el turno…", error: "", retryPrompt: undefined, retryNeedsAttachments: false, updatedAt: Date.now(), messages: alreadyAppended ? chat.messages : [...chat.messages, { id: `${runId}:user`, kind: "user", text: prompt, attachments: attachments.map(({ name, type }) => ({ name, type })), at: Date.now() } as ChatMessage].slice(-220) }));
     let responseStarted = false;
     let terminalEvent = false;
     try {
@@ -559,6 +568,17 @@ export default function SupervisorWorkspace() {
     setPendingAttachments((current) => ({ ...current, [active.id]: [] }));
     setAttachmentError("");
     void startSupervisorRun(active.id, text, false, attachments);
+  }
+
+  async function retryPublication(chatId: string) {
+    const chat = chatsRef.current.find((item) => item.id === chatId);
+    if (!chat?.retryPrompt || chat.running || !githubConnected || (chat.provider === "chatgpt" && !chatGPTConnected) || retryLocks.current.has(chatId)) return;
+    const attachments = pendingAttachments[chatId] || [];
+    if (chat.retryNeedsAttachments && !attachments.length) return;
+    retryLocks.current.add(chatId);
+    setPendingAttachments((current) => ({ ...current, [chatId]: [] }));
+    try { await startSupervisorRun(chatId, chat.retryPrompt, false, attachments); }
+    finally { retryLocks.current.delete(chatId); }
   }
 
   async function startAgentRun(chatId: string, name: string) {
@@ -716,7 +736,7 @@ export default function SupervisorWorkspace() {
         <header className={s.chatHeader}><button aria-label="Volver a chats" className={s.mobileBack} onClick={() => setMobileListOpen(true)}>‹</button><span className={s.supervisorAvatar}>S</span><div className={s.headerCopy}><strong>Supervisor</strong><span>{active.title} · {active.running ? active.status : "listo"}</span></div><button aria-label="Abrir chats de agentes" className={s.agentToggle} onClick={() => setMobileAgentsOpen(true)}>{parallelThreads.length ? `${parallelThreads.length} agentes` : "Agentes"}</button><button ref={settingsTriggerRef} aria-label="Abrir configuración" aria-expanded={settingsOpen} aria-controls="supervisor-settings" className={s.iconButton} onClick={() => setSettingsOpen(true)}>⚙</button></header>
         <div className={s.contextBar}><span>{modeLabel(active.mode)}</span><span>{active.provider === "copilot" ? "Copilot" : "ChatGPT"} · {selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</span>{active.repo && <span>repo · {active.repo}</span>}{active.queuedSupervisor.length > 0 && <span className={s.queueChip}>{active.queuedSupervisor.length} en cola</span>}{active.pullRequests.length > 0 && <button type="button" className={s.prQuickButton} aria-label={`Abrir lista de ${active.pullRequests.length} Pull Requests`} aria-expanded={prQuickOpen} onClick={() => setPrQuickOpen((open) => !open)}>PRs · {active.pullRequests.length}</button>}</div>
         <div className={s.messages}><div className={s.stack}>{prQuickOpen && active.pullRequests.length > 0 && <section className={s.prQuickList} aria-label="Lista rápida de Pull Requests"><div className={s.prQuickHeader}><strong>Pull Requests del chat</strong><button type="button" aria-label="Cerrar lista de Pull Requests" onClick={() => setPrQuickOpen(false)}>×</button></div>{active.pullRequests.slice().reverse().map((pr) => <a className={s.prQuickItem} key={pr.url} href={pr.url} target="_blank" rel="noreferrer"><span>{pr.repo || pr.url} {pr.number ? `#${pr.number}` : "↗"}</span><small>{pr.branch || "Abrir en GitHub"}</small></a>)}</section>}{active.messages.length === 0 && <div className={s.welcome}><div className={s.welcomeAvatar}>S</div><h1>Hablá con Supervisor</h1><p>Supervisor coordina el equipo. Los especialistas aparecen a la derecha como chats paralelos.</p></div>}{renderToolGroups(active.messages, "Supervisor", renderSupervisorMessage)}{active.pullRequests.length === 0 && active.diffStat && <div className={s.delivery}><strong>Cambios preparados</strong><pre>{active.diffStat}</pre></div>}<div ref={endRef} /></div></div>
-        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>{active.status === "Estado por confirmar" ? "Estado del turno incierto:" : "Ocurrió un error:"}</strong> {active.error}</div>}{attachmentChips(active.id, supervisorAttachments)}<div className={s.composer}><input ref={supervisorFileRef} className={s.hiddenFile} type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.html,.docx,.xlsx,.zip" onChange={(event) => { void attachFiles(active.id, event.target.files); event.target.value = ""; }} /><button type="button" aria-label="Adjuntar imágenes o archivos" title="Adjuntar imágenes o archivos" className={s.plus} onClick={() => supervisorFileRef.current?.click()}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby={sendHint ? "supervisor-send-hint" : undefined} value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Otra instrucción (queda en cola)…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button></div>{attachmentError && <small className={s.attachmentError} role="alert">{attachmentError}</small>}{sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</footer>
+        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>{active.status === "Estado por confirmar" ? "Estado del turno incierto:" : "Ocurrió un error:"}</strong> {active.error}{active.retryPrompt && <div className={s.retryControls}><button type="button" onClick={() => void retryPublication(active.id)} disabled={active.running || !githubConnected || (active.provider === "chatgpt" && !chatGPTConnected) || (active.retryNeedsAttachments && !supervisorAttachments.length)}>Reintentar</button><small>Se volverá a ejecutar el pedido para crear el PR.</small>{!githubConnected && <small>Reconectá GitHub para habilitar el reintento.</small>}{githubConnected && active.retryNeedsAttachments && !supervisorAttachments.length && <small>Volvé a adjuntar los archivos del pedido antes de reintentar.</small>}</div>}</div>}{attachmentChips(active.id, supervisorAttachments)}<div className={s.composer}><input ref={supervisorFileRef} className={s.hiddenFile} type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.html,.docx,.xlsx,.zip" onChange={(event) => { void attachFiles(active.id, event.target.files); event.target.value = ""; }} /><button type="button" aria-label="Adjuntar imágenes o archivos" title="Adjuntar imágenes o archivos" className={s.plus} onClick={() => supervisorFileRef.current?.click()}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby={sendHint ? "supervisor-send-hint" : undefined} value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Otra instrucción (queda en cola)…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button></div>{attachmentError && <small className={s.attachmentError} role="alert">{attachmentError}</small>}{sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</footer>
       </section>
 
       <aside className={s.agentRail}>
