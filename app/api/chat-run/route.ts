@@ -217,7 +217,9 @@ export async function POST(request: Request) {
         if (reasoningEffort) args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
         args.push("exec", "--json");
         for (const image of attached.images) args.push("--image", image);
-        args.push(teamPrompt);
+        // Codex's --image accepts multiple values and otherwise consumes the
+        // trailing positional prompt as another image path.
+        args.push("--", teamPrompt);
 
         const command = await sandbox.runCommand({
           cmd: "bash",
