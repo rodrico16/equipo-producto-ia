@@ -30,6 +30,13 @@ type ChatGPTState = {
   planType?: string | null;
 };
 
+type GoogleState = {
+  status: "disconnected" | "connected" | "expired";
+  email?: string | null;
+  name?: string | null;
+  picture?: string | null;
+};
+
 type AgentDefinition = { name: string; displayName: string; description: string; supervisor?: boolean };
 type GitHubRepo = { id: number; fullName: string; private: boolean; defaultBranch: string; canPush: boolean };
 type StreamEvent = { type: string; agentId?: string; data?: Record<string, unknown> };
@@ -201,6 +208,7 @@ function normalizeChat(input: Partial<ChatThread>): ChatThread {
 export default function SupervisorWorkspace() {
   const [session, setSession] = useState<SessionState | null>(null);
   const [chatGPT, setChatGPT] = useState<ChatGPTState>({ status: "disconnected" });
+  const [google, setGoogle] = useState<GoogleState>({ status: "disconnected" });
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [chatGPTModels, setChatGPTModels] = useState<ModelOption[]>([]);
   const [copilotModels, setCopilotModels] = useState<ModelOption[]>(COPILOT_FALLBACK);
@@ -254,6 +262,7 @@ export default function SupervisorWorkspace() {
       setAgents((agentsBody as { agents?: AgentDefinition[] }).agents ?? []);
     }).catch(() => setSession({ authenticated: true, githubConnected: false }));
     fetch("/api/chatgpt/status", { cache: "no-store" }).then((r) => r.json()).then((body) => setChatGPT(body as ChatGPTState)).catch(() => undefined);
+    fetch("/api/google/status", { cache: "no-store" }).then((r) => r.json()).then((body) => setGoogle(body as GoogleState)).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -353,9 +362,10 @@ export default function SupervisorWorkspace() {
   const selectedModel = models.find((m) => m.id === active?.model);
   const githubConnected = Boolean(session?.githubConnected);
   const chatGPTConnected = chatGPT.status === "connected";
+  const googleConnected = google.status === "connected";
   const supervisorAttachments = pendingAttachments[active?.id || ""] || [];
   const chatOnlyProvider = active?.provider === "google" || active?.provider === "apple";
-  const providerReady = active?.provider === "copilot" ? githubConnected : active?.provider === "google" ? true : active?.provider === "apple" ? isIPhone : chatGPTConnected;
+  const providerReady = active?.provider === "copilot" ? githubConnected : active?.provider === "google" ? googleConnected : active?.provider === "apple" ? isIPhone : chatGPTConnected;
   const canSendSupervisor = Boolean((active?.draft.trim() || supervisorAttachments.length) && (!active?.running || !supervisorAttachments.length) && providerReady && (chatOnlyProvider ? active.mode === "chat" : active.mode === "chat" || active.repo) && (active.mode !== "pr" || githubConnected) && (active.provider !== "copilot" || !supervisorAttachments.some((file) => file.type.startsWith("image/"))) && (active.provider !== "apple" || !supervisorAttachments.length));
   const sendHint = active?.running && supervisorAttachments.length
     ? "Esperá a que termine el turno para enviar adjuntos."
@@ -369,8 +379,8 @@ export default function SupervisorWorkspace() {
     ? "Escribí un mensaje para continuar."
     : active.provider === "copilot" && !githubConnected
       ? "Conectá GitHub para usar Copilot."
-      : active.provider === "google"
-        ? "Google usa Gemini API. El servidor debe tener GOOGLE_API_KEY o GEMINI_API_KEY."
+      : active.provider === "google" && !googleConnected
+        ? "Conectá Google para usar Gemini."
       : active.provider === "chatgpt" && !chatGPTConnected
         ? "Conectá ChatGPT para enviar el mensaje."
         : active.provider === "apple" && !isIPhone
@@ -778,6 +788,17 @@ export default function SupervisorWorkspace() {
     return <div key={message.id} className={s.agentReply}><strong>{thread.displayName}</strong><MessageResponse>{message.text}</MessageResponse><time>{time(message.at)}</time></div>;
   }
 
+  async function connectGoogle() {
+    try {
+      const response = await fetch("/api/google/login", { method: "POST" });
+      const body = await response.json() as { url?: string; error?: string };
+      if (!response.ok || !body.url) throw new Error(body.error || "No se pudo iniciar Google.");
+      window.location.href = body.url;
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function createChat() {
     const chat = defaultChat(); const useCopilot = Boolean(githubConnected && !chatGPTConnected); chat.provider = useCopilot ? "copilot" : "chatgpt"; chat.model = useCopilot ? "auto" : "";
     setChats((current) => [chat, ...current]); setActiveId(chat.id); setMobileListOpen(false); setSettingsOpen(true);
@@ -809,7 +830,36 @@ export default function SupervisorWorkspace() {
         {!selectedAgentThread ? <div className={s.agentList}>{parallelThreads.length === 0 && <div className={s.agentEmpty}><div>⇶</div><strong>Todavía no hay especialistas</strong><p>Cuando Supervisor delegue trabajo, cada agente aparece acá.</p></div>}{parallelThreads.map((thread) => { const last = [...thread.messages].reverse().find((m) => m.text); return <button className={s.agentListItem} key={thread.name} onClick={() => openAgent(thread.name)}><span className={s.agentAvatar}>{thread.displayName[0]?.toUpperCase() || "A"}</span><span><strong>{thread.displayName}</strong><small>{thread.assignment || last?.text || thread.description}</small></span><span className={`${s.agentStatus} ${thread.status === "running" ? s.agentRunning : thread.status === "error" ? s.agentError : s.agentDone}`}>{thread.status === "running" ? "●" : thread.status === "error" ? "!" : thread.status === "completed" ? "✓" : ""}{thread.unread > 0 && <b>{thread.unread}</b>}</span></button>; })}</div> : <div className={s.agentConversation}><div className={s.agentNotice}>Pedido actual: {selectedAgentThread.assignment || "Aún no hay una consigna registrada."}<br />Este hilo no modifica archivos. Tus ajustes se agregan al contexto del próximo turno de Supervisor.</div><div className={s.agentMessages}>{selectedAgentThread.description && <div className={s.agentSystem}>Rol · {selectedAgentThread.description}</div>}{renderToolGroups(selectedAgentThread.messages, selectedAgentThread.displayName, (message) => renderAgentMessage(message, selectedAgentThread))}<div ref={agentEndRef} /></div><div className={s.agentComposer}><input ref={agentFileRef} className={s.hiddenFile} type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.html,.docx,.xlsx,.zip" onChange={(event) => { void attachFiles(`${active.id}:${selectedAgentThread.name}`, event.target.files); event.target.value = ""; }} /><button type="button" aria-label="Adjuntar archivo al especialista" className={s.attachButton} onClick={() => agentFileRef.current?.click()} disabled={selectedAgentThread.status === "running"}>＋</button><div className={s.agentInput}>{attachmentChips(`${active.id}:${selectedAgentThread.name}`, pendingAttachments[`${active.id}:${selectedAgentThread.name}`] || [])}<textarea aria-label={`Ajustar pedido a ${selectedAgentThread.displayName}`} value={selectedAgentThread.draft} onChange={(e) => updateAgentThread(active.id, selectedAgentThread.name, (thread) => ({ ...thread, draft: e.target.value }))} placeholder={`Ajustar pedido a ${selectedAgentThread.displayName}…`} disabled={selectedAgentThread.status === "running"} rows={1} />{attachmentError && <small className={s.attachmentError} role="alert">{attachmentError}</small>}{active.provider === "copilot" && (pendingAttachments[`${active.id}:${selectedAgentThread.name}`] || []).some((file) => file.type.startsWith("image/")) && <small className={s.attachmentError}>Para analizar imágenes elegí ChatGPT / Codex.</small>}</div><button aria-label="Enviar ajuste al especialista" onClick={() => void startAgentRun(active.id, selectedAgentThread.name)} disabled={(!selectedAgentThread.draft.trim() && !(pendingAttachments[`${active.id}:${selectedAgentThread.name}`] || []).length) || selectedAgentThread.status === "running" || (active.provider === "copilot" && (pendingAttachments[`${active.id}:${selectedAgentThread.name}`] || []).some((file) => file.type.startsWith("image/")))}>➤</button></div></div>}
       </aside>
 
-      {settingsOpen && <><button aria-label="Cerrar configuración" className={s.settingsBackdrop} onClick={() => setSettingsOpen(false)} /><aside id="supervisor-settings" className={s.settings} role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className={s.sheetHandle} /><div className={s.settingsHeader}><div><strong id="settings-title">Configuración de Supervisor</strong><span>Proveedor, modelo, repo y entrega.</span></div><button ref={settingsCloseRef} aria-label="Cerrar configuración" className={s.iconButton} onClick={() => setSettingsOpen(false)}>×</button></div><section className={s.section}><div className={s.sectionTitle}>Modo</div><div className={s.modeGrid}>{(["chat","draft","pr"] as ChatMode[]).map((mode) => <button key={mode} disabled={(active.provider === "apple" || active.provider === "google") && mode !== "chat"} className={active.mode === mode ? s.modeActive : ""} onClick={() => updateChat(active.id, (chat) => ({ ...chat, mode, repo: mode === "chat" ? "" : chat.repo }))}><strong>{modeLabel(mode)}</strong></button>)}</div></section><section className={s.section}><div className={s.sectionTitle}>IA</div><div className={s.grid}><label>Proveedor<select value={active.provider} onChange={(e) => updateChat(active.id, (chat) => { const provider = e.target.value as Provider; return { ...chat, provider, mode: provider === "apple" || provider === "google" ? "chat" : chat.mode, repo: provider === "apple" || provider === "google" ? "" : chat.repo, model: provider === "copilot" ? "auto" : provider === "google" ? GOOGLE_AI_STUDIO_MODELS[0].id : provider === "apple" ? APPLE_INTELLIGENCE_MODEL.id : "" }; })}><option value="chatgpt">ChatGPT / Codex</option><option value="copilot" disabled={!githubConnected}>GitHub Copilot</option><option value="google">Google AI Studio</option>{isIPhone && <option value="apple">Apple Intelligence</option>}</select></label><label>Modelo<select value={active.model} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, model: e.target.value }))}>{models.map((m) => <option key={m.id} value={m.id}>{m.displayName || m.name || m.id}</option>)}</select></label></div></section>{active.mode !== "chat" && <section className={s.section}><div className={s.sectionTitle}>Repositorio</div><div className={s.repoRow}><select value={active.repo} onChange={(e) => setRepo(e.target.value)}><option value="">Elegí un repo…</option>{repos.map((repo) => <option key={repo.id} value={repo.fullName}>{repo.private ? "🔒 " : ""}{repo.fullName}</option>)}</select></div></section>}<section className={s.section}><div className={s.sectionTitle}>Conexiones</div><div className={s.connection}><span className={s.gptLogo}>GPT</span><div><strong>{chatGPTConnected ? "ChatGPT conectado" : "ChatGPT"}</strong><small>{chatGPT.planType || "Codex"}</small></div>{chatGPTConnected ? <button onClick={() => fetch("/api/chatgpt/logout", { method: "POST" }).then(() => setChatGPT({ status: "disconnected" }))}>Salir</button> : <button onClick={() => fetch("/api/chatgpt/login", { method: "POST" }).then((r) => r.json()).then((body) => setChatGPT(body as ChatGPTState)).catch((error) => setConnectionError(String(error)))}>Conectar</button>}</div><div className={s.connection}><span className={s.ghLogo}>GH</span><div><strong>{githubConnected ? `@${session.user?.login}` : "GitHub"}</strong><small>Repos + Copilot</small></div>{!githubConnected && <a href="/api/auth/github">Conectar</a>}</div><div className={s.connection}><span className={s.gptLogo}>G</span><div><strong>Google AI Studio</strong><small>Gemini API · requiere GOOGLE_API_KEY</small></div><a href="https://aistudio.google.com/" target="_blank" rel="noreferrer">Abrir</a></div>{isIPhone && <div className={s.connection}><span className={s.gptLogo}>AI</span><div><strong>Apple Intelligence</strong><small>Disponible desde este iPhone</small></div><span>Activo</span></div>}{connectionError && <div className={s.formError}>{connectionError}</div>}</section></aside></>}
+      {settingsOpen && <>
+        <button aria-label="Cerrar configuración" className={s.settingsBackdrop} onClick={() => setSettingsOpen(false)} />
+        <aside id="supervisor-settings" className={s.settings} role="dialog" aria-modal="true" aria-labelledby="settings-title">
+          <div className={s.sheetHandle} />
+          <div className={s.settingsHeader}>
+            <div><strong id="settings-title">Configuración de Supervisor</strong><span>Proveedor, modelo, repo y entrega.</span></div>
+            <button ref={settingsCloseRef} aria-label="Cerrar configuración" className={s.iconButton} onClick={() => setSettingsOpen(false)}>×</button>
+          </div>
+          <section className={s.section}>
+            <div className={s.sectionTitle}>Modo</div>
+            <div className={s.modeGrid}>{(["chat","draft","pr"] as ChatMode[]).map((mode) => <button key={mode} disabled={(active.provider === "apple" || active.provider === "google") && mode !== "chat"} className={active.mode === mode ? s.modeActive : ""} onClick={() => updateChat(active.id, (chat) => ({ ...chat, mode, repo: mode === "chat" ? "" : chat.repo }))}><strong>{modeLabel(mode)}</strong></button>)}</div>
+          </section>
+          <section className={s.section}>
+            <div className={s.sectionTitle}>IA</div>
+            <div className={s.grid}>
+              <label>Proveedor<select value={active.provider} onChange={(e) => updateChat(active.id, (chat) => { const provider = e.target.value as Provider; return { ...chat, provider, mode: provider === "apple" || provider === "google" ? "chat" : chat.mode, repo: provider === "apple" || provider === "google" ? "" : chat.repo, model: provider === "copilot" ? "auto" : provider === "google" ? GOOGLE_AI_STUDIO_MODELS[0].id : provider === "apple" ? APPLE_INTELLIGENCE_MODEL.id : "" }; })}><option value="chatgpt">ChatGPT / Codex</option><option value="copilot" disabled={!githubConnected}>GitHub Copilot</option><option value="google">Google AI Studio</option>{isIPhone && <option value="apple">Apple Intelligence</option>}</select></label>
+              <label>Modelo<select value={active.model} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, model: e.target.value }))}>{models.map((m) => <option key={m.id} value={m.id}>{m.displayName || m.name || m.id}</option>)}</select></label>
+            </div>
+          </section>
+          {active.mode !== "chat" && <section className={s.section}><div className={s.sectionTitle}>Repositorio</div><div className={s.repoRow}><select value={active.repo} onChange={(e) => setRepo(e.target.value)}><option value="">Elegí un repo…</option>{repos.map((repo) => <option key={repo.id} value={repo.fullName}>{repo.private ? "🔒 " : ""}{repo.fullName}</option>)}</select></div></section>}
+          <section className={s.section}>
+            <div className={s.sectionTitle}>Conexiones</div>
+            <div className={s.connection}><span className={s.gptLogo}>GPT</span><div><strong>{chatGPTConnected ? "ChatGPT conectado" : "ChatGPT"}</strong><small>{chatGPT.planType || "Codex"}</small></div>{chatGPTConnected ? <button onClick={() => fetch("/api/chatgpt/logout", { method: "POST" }).then(() => setChatGPT({ status: "disconnected" }))}>Salir</button> : <button onClick={() => fetch("/api/chatgpt/login", { method: "POST" }).then((r) => r.json()).then((body) => setChatGPT(body as ChatGPTState)).catch((error) => setConnectionError(String(error)))}>Conectar</button>}</div>
+            <div className={s.connection}><span className={s.ghLogo}>GH</span><div><strong>{githubConnected ? `@${session.user?.login}` : "GitHub"}</strong><small>Repos + Copilot</small></div>{!githubConnected && <a href="/api/auth/github">Conectar</a>}</div>
+            <div className={s.connection}><span className={s.gptLogo}>G</span><div><strong>{googleConnected ? "Google conectado" : "Google AI Studio"}</strong><small>{google.email || "Gemini API · OAuth"}</small></div>{googleConnected ? <button onClick={() => fetch("/api/google/logout", { method: "POST" }).then(() => setGoogle({ status: "disconnected" }))}>Salir</button> : <button onClick={() => void connectGoogle()}>Conectar</button>}</div>
+            {isIPhone && <div className={s.connection}><span className={s.gptLogo}>AI</span><div><strong>Apple Intelligence</strong><small>Disponible desde este iPhone</small></div><span>Activo</span></div>}
+            {connectionError && <div className={s.formError}>{connectionError}</div>}
+          </section>
+        </aside>
+      </>}
     </main>
   );
 }
