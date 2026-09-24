@@ -11,7 +11,7 @@
     "validate:runner": "node scripts/validate-runner.mjs",
     "validate:assignment-bridge": "node scripts/validate-codex-assignment-bridge.mjs",
     "check": "npm run validate:runner && npm run validate:assignment-bridge && npm run validate:run-contracts && npm run typecheck && npm run build",
-    "test": "node scripts/validate-run-contracts.mjs",
+    "test": "node scripts/validate-run-contracts.mjs && node scripts/validate-github-publication-error.mjs && node scripts/validate-existing-pull-request.mjs",
     "validate:run-contracts": "node scripts/validate-run-contracts.mjs"
   },
   "engines": {

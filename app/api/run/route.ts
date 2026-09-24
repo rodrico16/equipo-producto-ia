@@ -6,6 +6,8 @@ import { presentRuntimeError } from "@/lib/runtime-error";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 import { finishRun, getRun, startRun } from "@/lib/run-store";
 import { validateAttachments, writeRunAttachments, type RunAttachment } from "@/lib/run-attachments";
+import { GitHubPublicationAuthError, pushAuthFailure, apiAuthFailure } from "@/lib/github-publication-error";
+import { findReusablePullRequest, type ExistingPullRequest } from "@/lib/existing-pull-request";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -18,6 +20,7 @@ type RunRequest = {
   reasoningEffort?: string;
   prompt?: string;
   publicationMode?: "pr";
+  existingPrNumbers?: number[];
   attachments?: RunAttachment[];
 };
 
@@ -190,6 +193,10 @@ export async function POST(request: Request) {
   if (publicationMode !== undefined && publicationMode !== "pr") {
     return Response.json({ error: "Unsupported publication mode" }, { status: 400 });
   }
+  if (body.existingPrNumbers !== undefined && (!Array.isArray(body.existingPrNumbers) || body.existingPrNumbers.length > 30 ||
+      body.existingPrNumbers.some((number) => !Number.isSafeInteger(number) || number < 1))) {
+    return Response.json({ error: "Invalid Pull Request numbers" }, { status: 400 });
+  }
 
   if (!repoPattern.test(repo)) {
     return Response.json({ error: "Repository must be owner/name" }, { status: 400 });
@@ -249,15 +256,21 @@ export async function POST(request: Request) {
           throw new Error("Como invitado sólo podés ejecutar sobre repositorios públicos.");
         }
 
-        const baseBranch = body.branch?.trim() || repoInfo.default_branch || "main";
-        const runBranch = `ai/control-room-${Date.now()}`;
+        let existingPr: ExistingPullRequest | null = null;
+        for (const number of new Set(body.existingPrNumbers || [])) {
+          existingPr = await findReusablePullRequest(repo, number, github?.token);
+          if (existingPr) break;
+        }
+        const baseBranch = existingPr?.baseBranch || body.branch?.trim() || repoInfo.default_branch || "main";
+        const runBranch = existingPr?.branch || `ai/control-room-${Date.now()}`;
+        const checkoutBranch = existingPr?.branch || baseBranch;
         const actor = github?.login || "guest";
         let repoDir: string;
 
         controller.enqueue(line({
           type: "control.status",
           data: {
-            message: `Creando sandbox ${provider === "chatgpt" ? "ChatGPT/Codex" : "Copilot"} para ${repo}@${baseBranch}`,
+            message: `Creando sandbox ${provider === "chatgpt" ? "ChatGPT/Codex" : "Copilot"} para ${repo}@${checkoutBranch}`,
             branch: github ? runBranch : null,
           },
         }));
@@ -282,7 +295,7 @@ export async function POST(request: Request) {
                 ],
                 env: {
                   GH_CLONE_TOKEN: github.token,
-                  BASE_BRANCH: baseBranch,
+                  BASE_BRANCH: checkoutBranch,
                   TARGET_REPO: repo,
                   TARGET_DIR: repoDir,
                 },
@@ -294,7 +307,7 @@ export async function POST(request: Request) {
                   'git clone --depth 1 --branch "$BASE_BRANCH" "https://github.com/$TARGET_REPO.git" "$TARGET_DIR"',
                 ],
                 env: {
-                  BASE_BRANCH: baseBranch,
+                  BASE_BRANCH: checkoutBranch,
                   TARGET_REPO: repo,
                   TARGET_DIR: repoDir,
                 },
@@ -310,7 +323,7 @@ export async function POST(request: Request) {
               url: `https://github.com/${repo}.git`,
               username: github.login,
               password: github.token,
-              revision: baseBranch,
+              revision: checkoutBranch,
               depth: 1,
             },
             timeout: 20 * 60 * 1000,
@@ -331,7 +344,10 @@ export async function POST(request: Request) {
         const baseSha = (await baseShaResult.stdout()).trim();
         if (!baseSha) throw new Error("Could not resolve base commit");
 
-        await sandbox.runCommand({ cmd: "git", args: ["switch", "-c", runBranch], cwd: repoDir });
+        if (!existingPr) {
+          const switchResult = await sandbox.runCommand({ cmd: "git", args: ["switch", "-c", runBranch], cwd: repoDir });
+          if (switchResult.exitCode !== 0) throw new Error(`Could not create branch: ${(await switchResult.stderr()).slice(-800)}`);
+        }
         await sandbox.runCommand({
           cmd: "git",
           args: ["config", "user.name", github ? `${github.login} via AI Control Room` : "AI Control Room Guest"],
@@ -545,6 +561,13 @@ export async function POST(request: Request) {
           return;
         }
 
+        if (existingPr) {
+          const currentPr = await findReusablePullRequest(repo, existingPr.number, github.token);
+          if (!currentPr || currentPr.branch !== existingPr.branch) {
+            throw new Error("El Pull Request cambió o se cerró durante la ejecución. Volvé a enviar el pedido para publicar de forma segura.");
+          }
+        }
+
         controller.enqueue(line({ type: "control.status", data: { message: "Publicando rama en GitHub…" } }));
         const push = await sandbox.runCommand({
           cmd: "bash",
@@ -555,9 +578,14 @@ export async function POST(request: Request) {
           cwd: repoDir,
           env: { GH_PUSH_TOKEN: github.token, RUN_BRANCH: runBranch },
         });
-        if (push.exitCode !== 0) throw new Error(`Push failed: ${(await push.stderr()).slice(-1200)}`);
+        if (push.exitCode !== 0) {
+          const stderr = (await push.stderr()).slice(-1200);
+          const reason = pushAuthFailure(stderr);
+          if (reason) throw new GitHubPublicationAuthError("push", reason);
+          throw new Error(`Push failed: ${stderr}`);
+        }
 
-        const prResponse = await fetch(`https://api.github.com/repos/${repo}/pulls`, {
+        const prResponse = existingPr ? null : await fetch(`https://api.github.com/repos/${repo}/pulls`, {
           method: "POST",
           headers: {
             ...githubHeaders(github.token),
@@ -585,9 +613,11 @@ export async function POST(request: Request) {
             ].join("\n"),
           }),
         });
-        const pr = (await prResponse.json()) as { html_url?: string; number?: number; message?: string };
-        if (!prResponse.ok || !pr.html_url) {
-          throw new Error(`Branch pushed but PR creation failed: ${pr.message ?? prResponse.status}`);
+        const createdPr = prResponse ? await prResponse.json() as { html_url?: string; number?: number; message?: string } : null;
+        if (prResponse && (!prResponse.ok || !createdPr?.html_url)) {
+          const reason = apiAuthFailure(prResponse.status, createdPr?.message);
+          if (reason) throw new GitHubPublicationAuthError("pull_request", reason);
+          throw new Error(`Branch pushed but PR creation failed: ${createdPr?.message ?? prResponse.status}`);
         }
 
         finishRun(runId, runOwner);
@@ -598,8 +628,9 @@ export async function POST(request: Request) {
             provider,
             baseBranch,
             branch: runBranch,
-            prUrl: pr.html_url,
-            prNumber: pr.number,
+            prUrl: existingPr?.url || createdPr?.html_url,
+            prNumber: existingPr?.number || createdPr?.number,
+            updatedExistingPr: Boolean(existingPr),
             diffStat,
             delivery: "github",
             actor,
@@ -608,6 +639,9 @@ export async function POST(request: Request) {
       } catch (error) {
         const message = presentRuntimeError(error instanceof Error ? error.message : String(error), "La ejecución del equipo falló");
         finishRun(runId, runOwner, message);
+        if (error instanceof GitHubPublicationAuthError) {
+          controller.enqueue(line({ type: "auth.required", data: { provider: "github", message, stage: error.stage, reason: error.reason } }));
+        }
         controller.enqueue(line({
           type: "control.error",
           data: { message },
