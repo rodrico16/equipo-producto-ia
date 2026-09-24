@@ -112,6 +112,14 @@ function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 function asString(value: unknown) { return typeof value === "string" ? value : ""; }
+function pullRequestNumber(pr: PullRequestRecord, repo: string) {
+  try {
+    const url = new URL(pr.url);
+    const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
+    if (url.origin !== "https://github.com" || !match || `${match[1]}/${match[2]}`.toLowerCase() !== repo.toLowerCase()) return undefined;
+    return pr.number || Number(match[3]);
+  } catch { return undefined; }
+}
 function asRecord(value: unknown): ToolArgs {
   if (value && typeof value === "object") return value as ToolArgs;
   if (typeof value === "string") {
@@ -384,8 +392,8 @@ export default function SupervisorWorkspace() {
     updateChat(chatId, (chat) => {
       const pullRequests = [...chat.pullRequests.filter((item) => item.url !== url), record].slice(-30);
       const messages = chat.messages.some((message) => message.kind === "pr" && message.pullRequest?.url === url)
-        ? chat.messages.map((message) => message.kind === "pr" && message.pullRequest?.url === url ? { ...message, pullRequest: record, at: record.at } : message)
-        : [...chat.messages, { id: `pr:${url}`, kind: "pr", text: "Pull Request creado", at: record.at, agent: "supervisor", displayName: "Supervisor", pullRequest: record } as ChatMessage];
+        ? chat.messages.map((message) => message.kind === "pr" && message.pullRequest?.url === url ? { ...message, text: data.updatedExistingPr ? "Pull Request actualizado con un commit" : message.text, pullRequest: record, at: record.at } : message)
+        : [...chat.messages, { id: `pr:${url}`, kind: "pr", text: data.updatedExistingPr ? "Pull Request actualizado con un commit" : "Pull Request creado", at: record.at, agent: "supervisor", displayName: "Supervisor", pullRequest: record } as ChatMessage];
       return { ...chat, prUrl: url, pullRequests, messages: messages.sort((a, b) => a.at - b.at).slice(-220), updatedAt: Date.now() };
     });
   }
@@ -507,8 +515,9 @@ export default function SupervisorWorkspace() {
     let terminalEvent = false;
     try {
       const endpoint = thread.mode === "pr" ? "/api/run" : thread.provider === "copilot" ? "/api/copilot-run" : "/api/chat-run";
+      const existingPrNumbers = [...thread.pullRequests].reverse().map((item) => pullRequestNumber(item, thread.repo)).filter((number): number is number => Boolean(number));
       const payload = thread.mode === "pr"
-        ? { repo: thread.repo, branch: thread.branch, provider: thread.provider, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt, attachments }
+        ? { repo: thread.repo, branch: thread.branch, existingPrNumbers, provider: thread.provider, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt, attachments }
         : { mode: thread.mode, repo: thread.repo, branch: thread.branch, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt, attachments };
       const response = await fetch(endpoint, {
         method: "POST",
