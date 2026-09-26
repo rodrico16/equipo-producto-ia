@@ -556,7 +556,7 @@ export default function SupervisorWorkspace() {
     let responseStarted = false;
     let terminalEvent = false;
     let softTimedOut = false;
-    let softTimeout: ReturnType<typeof window.setTimeout> | undefined;
+    let softTimeout: number | undefined;
     try {
       if (thread.provider === "apple") {
         const shareText = `Actuá como Supervisor del equipo de producto e ingeniería.\n\n${requestPrompt}`;
