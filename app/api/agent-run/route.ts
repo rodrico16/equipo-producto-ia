@@ -8,7 +8,7 @@ import { finishRun, getRun, startRun } from "@/lib/run-store";
 import { validateAttachments, writeRunAttachments, type RunAttachment } from "@/lib/run-attachments";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 type Provider = "copilot" | "chatgpt";
 type RunRequest = {

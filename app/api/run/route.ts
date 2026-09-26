@@ -10,7 +10,7 @@ import { GitHubPublicationAuthError, pushAuthFailure, apiAuthFailure } from "@/l
 import { findReusablePullRequest, type ExistingPullRequest } from "@/lib/existing-pull-request";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 800;
 
 type RunRequest = {
   repo?: string;
