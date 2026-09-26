@@ -25,6 +25,28 @@ try {
     }
     console.log(`Embedded ${label} syntax: OK`);
   }
+
+  const sandboxSource = await readFile("lib/chatgpt-sandbox.ts", "utf8");
+  const preflight = sandboxSource.match(/export const CODEX_BWRAP_PREFLIGHT = String\.raw`([\s\S]*?)`;/);
+  if (!preflight) throw new Error("Codex bwrap preflight is missing");
+  for (const required of [
+    "Unexpected capabilities but not setuid",
+    "setcap -r",
+    "--ro-bind / / true",
+    "Operation not permitted",
+    "No unsandboxed fallback was started",
+  ]) {
+    if (!preflight[1].includes(required)) throw new Error(`Codex bwrap preflight is missing guardrail: ${required}`);
+  }
+  const preflightFile = path.join(dir, "codex-bwrap-preflight.sh");
+  await writeFile(preflightFile, preflight[1], "utf8");
+  const shellCheck = spawnSync("bash", ["-n", preflightFile], { encoding: "utf8" });
+  if (shellCheck.status !== 0) {
+    process.stderr.write(shellCheck.stderr || shellCheck.stdout);
+    process.exit(shellCheck.status ?? 1);
+  }
+  console.log("Codex bwrap preflight syntax and guardrails: OK");
+
 } finally {
   await rm(dir, { recursive: true, force: true });
 }
