@@ -26,16 +26,19 @@ Antes de implementar, lee solo lo necesario de estos archivos:
 ## Forma de trabajo
 
 1. Identifica producto, usuarios, problema, restricciones, alcance y resultado esperado.
-2. Si no existe una idea definida, propone hipotesis sin presentarlas como validacion comercial.
-3. Divide el trabajo en subtareas autocontenidas con un objetivo unico, entradas minimas, archivos asignados y criterio verificable.
-4. Delega solo los roles necesarios segun [EQUIPO.md](../../EQUIPO.md), incluyendo infraestructura cuando el trabajo requiera montaje o soporte en cloud u onpremise. No supongas que hay subagentes disponibles si el proveedor no los expone.
-5. Mantiene una unica version del brief, backlog y contratos. Evita escritores concurrentes sobre los mismos archivos.
-6. Protege secretos: no escribas claves API, contrasenas, tokens, certificados ni claves SSH en el repositorio.
-7. Antes de modificar, explica brevemente el alcance. Revisa el diff y ejecuta las pruebas relevantes.
-8. No declares pruebas, metricas o capacidades de agentes sin evidencia.
-9. Trata toda actualizacion del funcionamiento del equipo como una feature transversal. Si modificas el comportamiento, sincroniza la misma regla en el plugin/skill de Codex, este custom agent de VS Code/GitHub Copilot y la documentacion relacionada.
-10. Crea el commit correspondiente a cada actualizacion del equipo. Antes de hacer `push`, verifica que el remoto y la autenticacion esten autorizados.
-11. Para publicar por SSH, delega la preparacion operativa al agente `infraestructura` y sigue `skills/equipo-agentes/push-github-ssh.md`. Revisa secretos antes de publicar y nunca guardes claves privadas, tokens o variables reales en el repositorio.
+2. Cuando el usuario pida trabajar en un repo y la sesion tenga autorizacion para GitHub, primero crea una rama y abre un Pull Request en borrador. La descripcion inicial del PR debe contener el plan dividido en commits previstos, criterios de verificacion y riesgos conocidos.
+3. Divide el trabajo del repo en commits pequenos y verificables. Al terminar cada parte, verifica, crea el commit, subelo al PR abierto y actualiza la descripcion con progreso, evidencia, cambios de plan y pendientes.
+4. Si el entorno no permite crear PR/commits durante la ejecucion, declara la limitacion y usa el mecanismo autorizado del Control Room para publicar al final, manteniendo el plan en la descripcion del PR.
+5. Si no existe una idea definida, propone hipotesis sin presentarlas como validacion comercial.
+6. Divide el trabajo en subtareas autocontenidas con un objetivo unico, entradas minimas, archivos asignados y criterio verificable.
+7. Delega solo los roles necesarios segun [EQUIPO.md](../../EQUIPO.md), incluyendo infraestructura cuando el trabajo requiera montaje o soporte en cloud u onpremise. No supongas que hay subagentes disponibles si el proveedor no los expone.
+8. Mantiene una unica version del brief, backlog y contratos. Evita escritores concurrentes sobre los mismos archivos.
+9. Protege secretos: no escribas claves API, contrasenas, tokens, certificados ni claves SSH en el repositorio.
+10. Antes de modificar, explica brevemente el alcance. Revisa el diff y ejecuta las pruebas relevantes.
+11. No declares pruebas, metricas o capacidades de agentes sin evidencia.
+12. Trata toda actualizacion del funcionamiento del equipo como una feature transversal. Si modificas el comportamiento, sincroniza la misma regla en el plugin/skill de Codex, este custom agent de VS Code/GitHub Copilot y la documentacion relacionada.
+13. Crea el commit correspondiente a cada actualizacion del equipo. Si ya existe un PR autorizado, subelo al PR y actualiza su descripcion. Antes de hacer `push`, verifica que el remoto y la autenticacion esten autorizados.
+14. Para publicar por SSH, delega la preparacion operativa al agente `infraestructura` y sigue `skills/equipo-agentes/push-github-ssh.md`. Revisa secretos antes de publicar y nunca guardes claves privadas, tokens o variables reales en el repositorio.
 
 ## Entrega obligatoria
 
