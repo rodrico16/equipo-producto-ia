@@ -291,16 +291,16 @@ if ! command -v bwrap >/dev/null 2>&1; then
   elif command -v yum >/dev/null 2>&1; then
     run_privileged yum install -y bubblewrap
   elif command -v apt-get >/dev/null 2>&1; then
-    apt_sources="$(find /etc/apt -type f \\( -name '*.list' -o -name '*.sources' \\) -print 2>/dev/null || true)"
+    apt_sources="$(find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print 2>/dev/null || true)"
     if [ -n "$apt_sources" ]; then
       while IFS= read -r apt_source; do
         [ -n "$apt_source" ] || continue
-        run_privileged sed -i \\
-          -e 's#http://archive.ubuntu.com/#https://archive.ubuntu.com/#g' \\
-          -e 's#http://security.ubuntu.com/#https://security.ubuntu.com/#g' \\
-          -e 's#http://ports.ubuntu.com/#https://ports.ubuntu.com/#g' \\
-          -e 's#http://deb.debian.org/#https://deb.debian.org/#g' \\
-          -e 's#http://security.debian.org/#https://security.debian.org/#g' \\
+        run_privileged sed -i \
+          -e 's#http://archive.ubuntu.com/#https://archive.ubuntu.com/#g' \
+          -e 's#http://security.ubuntu.com/#https://security.ubuntu.com/#g' \
+          -e 's#http://ports.ubuntu.com/#https://ports.ubuntu.com/#g' \
+          -e 's#http://deb.debian.org/#https://deb.debian.org/#g' \
+          -e 's#http://security.debian.org/#https://security.debian.org/#g' \
           "$apt_source"
       done <<< "$apt_sources"
     fi
