@@ -267,6 +267,29 @@ fi
 exit 70
 `;
 
+async function ensureBubblewrapInstalled(sandbox: Sandbox) {
+  const result = await sandbox.runCommand("bash", [
+    "-lc",
+    [
+      "set -euo pipefail",
+      "if command -v bwrap >/dev/null 2>&1; then exit 0; fi",
+      "if ! command -v dnf >/dev/null 2>&1; then echo 'bwrap is missing and dnf is unavailable in the Vercel Sandbox runtime.' >&2; exit 127; fi",
+      "if [ \"$(id -u)\" -eq 0 ]; then dnf install -y bubblewrap",
+      "elif command -v sudo >/dev/null 2>&1; then sudo -n dnf install -y bubblewrap",
+      "else echo 'bwrap is missing and the Vercel Sandbox runtime cannot install system packages.' >&2; exit 77; fi",
+      "command -v bwrap >/dev/null 2>&1 || { echo 'Amazon Linux package installation finished without providing bwrap.' >&2; exit 70; }",
+    ].join("; "),
+  ]);
+  if (result.exitCode !== 0) {
+    const details = (await result.stderr()).trim().slice(-1600);
+    throw new Error(
+      details
+        ? `Could not provision bubblewrap in Vercel Sandbox: ${details}`
+        : "Could not provision bubblewrap in Vercel Sandbox.",
+    );
+  }
+}
+
 async function ensureCodexSandbox(sandbox: Sandbox) {
   const result = await sandbox.runCommand("bash", ["-lc", CODEX_BWRAP_PREFLIGHT]);
   if (result.exitCode !== 0) {
@@ -298,6 +321,8 @@ export const CHATGPT_WORKER_NETWORK_POLICY = {
     "registry.yarnpkg.com",
     "pypi.org",
     "files.pythonhosted.org",
+    "cdn.amazonlinux.com",
+    "al2023-repos-us-east-1-de612dc2.s3.dualstack.us-east-1.amazonaws.com",
   ],
 };
 
@@ -375,6 +400,7 @@ export async function createChatGPTWorkerSandbox(authJson: string, timeout = 20 
     networkPolicy: CHATGPT_WORKER_NETWORK_POLICY,
   });
   await ensureCodex(sandbox);
+  await ensureBubblewrapInstalled(sandbox);
   await ensureCodexSandbox(sandbox);
   await restoreAuth(sandbox, authJson);
   await installCodexEventBridge(sandbox);
