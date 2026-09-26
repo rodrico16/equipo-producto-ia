@@ -100,6 +100,7 @@ type ChatThread = {
   runId?: string;
   retryPrompt?: string;
   retryNeedsAttachments?: boolean;
+  continuationPrompt?: string;
 };
 
 type ToolArgs = Record<string, unknown>;
@@ -108,6 +109,7 @@ const STORAGE_KEY = "epia_control_room_chats_v3";
 const ACTIVE_KEY = "epia_control_room_active_chat_v3";
 const COPILOT_FALLBACK: ModelOption[] = [{ id: "auto", displayName: "Auto · Copilot decide" }];
 const APPLE_INTELLIGENCE_MODEL: ModelOption = { id: "apple-intelligence", displayName: "Apple Intelligence · iPhone" };
+const VERCEL_HOBBY_SOFT_TIMEOUT_MS = 285_000;
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -137,6 +139,14 @@ function time(ts: number) {
 function titleFrom(text: string) {
   const clean = text.replace(/\s+/g, " ").trim();
   return clean.length > 42 ? `${clean.slice(0, 42)}…` : clean || "Nuevo chat";
+}
+function continuationPromptFor(reason: string) {
+  return [
+    "Continuá el turno anterior usando el contexto visible de este chat.",
+    `Motivo de la pausa: ${reason}`,
+    "Primero revisá lo ya conversado y cualquier salida parcial, luego seguí desde el punto más útil sin repetir trabajo innecesario.",
+    "Si no hay evidencia suficiente para afirmar que una acción terminó, verificá antes de declararla completada.",
+  ].join("\n");
 }
 function modeLabel(mode: ChatMode) {
   if (mode === "pr") return "Repo + PR";
@@ -288,13 +298,21 @@ export default function SupervisorWorkspace() {
         try {
           const response = await fetch(`/api/runs/${encodeURIComponent(chat.runId)}`, { cache: "no-store" });
           if (response.status === 404) {
-            updateChat(chat.id, (current) => current.status === "Estado por confirmar" ? current : ({ ...current, running: false, status: "Estado por confirmar", error: "No se puede verificar el estado de este turno. El servidor no conserva su registro tras un reinicio; la conexión del chat puede seguir funcionando. Revisá si el trabajo se completó antes de repetir el pedido.", updatedAt: Date.now() }));
+            updateChat(chat.id, (current) => current.status === "Estado por confirmar" && current.continuationPrompt ? current : ({
+              ...current,
+              running: false,
+              runId: "",
+              status: "Estado por confirmar",
+              error: "No se puede verificar el estado de este turno. El servidor no conserva su registro tras un reinicio o al llegar al límite de Vercel Hobby. Podés continuar con el contexto guardado en este chat.",
+              continuationPrompt: continuationPromptFor("el servidor perdió el registro del turno en curso"),
+              updatedAt: Date.now(),
+            }));
             continue;
           }
           if (!response.ok) continue;
           const state = await response.json() as { status?: string; error?: string };
-          if (state.status === "completed") updateChat(chat.id, (current) => ({ ...current, running: false, status: "Turno completado", error: "El turno terminó, pero la respuesta no está disponible en este dispositivo. Revisá el resultado antes de repetirlo.", updatedAt: Date.now() }));
-          if (state.status === "failed") updateChat(chat.id, (current) => ({ ...current, running: false, status: "Turno detenido", error: state.error || "La ejecución falló", updatedAt: Date.now() }));
+          if (state.status === "completed") updateChat(chat.id, (current) => ({ ...current, running: false, runId: "", status: "Turno completado", error: "El turno terminó, pero la respuesta no está disponible en este dispositivo. Revisá el resultado antes de repetirlo.", updatedAt: Date.now() }));
+          if (state.status === "failed") updateChat(chat.id, (current) => ({ ...current, running: false, runId: "", status: "Turno detenido", error: state.error || "La ejecución falló", updatedAt: Date.now() }));
         } catch { /* transient disconnect; retry on the next interval */ }
       }
     };
@@ -509,11 +527,11 @@ export default function SupervisorWorkspace() {
     if (event.type === "control.done") {
       const prUrl = asString(data.prUrl); const diffStat = asString(data.diffStat);
       if (prUrl) upsertPullRequest(chatId, data);
-      updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Turno completado", diffStat: diffStat || chat.diffStat, error: "", updatedAt: Date.now() })); return;
+      updateChat(chatId, (chat) => ({ ...chat, running: false, runId: "", status: "Turno completado", diffStat: diffStat || chat.diffStat, error: "", continuationPrompt: undefined, updatedAt: Date.now() })); return;
     }
     if (event.type === "control.error" || event.type === "run.failed") {
       const message = asString(data.message) || "La ejecución falló";
-      updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Turno detenido", error: message, updatedAt: Date.now() })); system(chatId, message, "bad");
+      updateChat(chatId, (chat) => ({ ...chat, running: false, runId: "", status: "Turno detenido", error: message, updatedAt: Date.now() })); system(chatId, message, "bad");
     }
   }
 
@@ -534,9 +552,11 @@ export default function SupervisorWorkspace() {
     const history = thread.messages.filter((m) => m.kind === "user" || m.kind === "agent").slice(-12).map((m) => `${m.kind === "user" ? "USUARIO" : "SUPERVISOR"}: ${m.text}`).join("\n\n");
     const specialist = specialistContext(thread);
     const requestPrompt = [history ? `CONTEXTO DEL CHAT CON SUPERVISOR:\n${history}` : "", specialist ? `INTERVENCIONES DIRECTAS CON ESPECIALISTAS:\n${specialist}` : "", `NUEVO PEDIDO DEL USUARIO:\n${prompt}`].filter(Boolean).join("\n\n");
-    updateChat(chatId, (chat) => ({ ...chat, title: chat.title === "Nuevo chat" ? titleFrom(prompt) : chat.title, draft: "", running: true, runId, status: "Supervisor está preparando el turno…", error: "", retryPrompt: undefined, retryNeedsAttachments: false, updatedAt: Date.now(), messages: alreadyAppended ? chat.messages : [...chat.messages, { id: `${runId}:user`, kind: "user", text: prompt, attachments: attachments.map(({ name, type }) => ({ name, type })), at: Date.now() } as ChatMessage].slice(-220) }));
+    updateChat(chatId, (chat) => ({ ...chat, title: chat.title === "Nuevo chat" ? titleFrom(prompt) : chat.title, draft: "", running: true, runId, status: "Supervisor está preparando el turno…", error: "", retryPrompt: undefined, retryNeedsAttachments: false, continuationPrompt: undefined, updatedAt: Date.now(), messages: alreadyAppended ? chat.messages : [...chat.messages, { id: `${runId}:user`, kind: "user", text: prompt, attachments: attachments.map(({ name, type }) => ({ name, type })), at: Date.now() } as ChatMessage].slice(-220) }));
     let responseStarted = false;
     let terminalEvent = false;
+    let softTimedOut = false;
+    let softTimeout: ReturnType<typeof window.setTimeout> | undefined;
     try {
       if (thread.provider === "apple") {
         const shareText = `Actuá como Supervisor del equipo de producto e ingeniería.\n\n${requestPrompt}`;
@@ -547,7 +567,7 @@ export default function SupervisorWorkspace() {
           await navigator.clipboard.writeText(shareText);
           system(chatId, "Pedido copiado. Pegalo en el flujo de Apple Intelligence del iPhone.", "good");
         }
-        updateChat(chatId, (chat) => ({ ...chat, running: false, status: "Apple Intelligence listo", error: "", updatedAt: Date.now() }));
+        updateChat(chatId, (chat) => ({ ...chat, running: false, runId: "", status: "Apple Intelligence listo", error: "", updatedAt: Date.now() }));
         return;
       }
       const endpoint = thread.mode === "pr" ? "/api/run" : thread.provider === "copilot" ? "/api/copilot-run" : "/api/chat-run";
@@ -555,6 +575,10 @@ export default function SupervisorWorkspace() {
       const payload = thread.mode === "pr"
         ? { repo: thread.repo, branch: thread.branch, existingPrNumbers, provider: thread.provider, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt, attachments }
         : { mode: thread.mode, repo: thread.repo, branch: thread.branch, model: thread.model, reasoningEffort: thread.reasoningEffort, prompt: requestPrompt, attachments };
+      softTimeout = window.setTimeout(() => {
+        softTimedOut = true;
+        controller.abort();
+      }, VERCEL_HOBBY_SOFT_TIMEOUT_MS);
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Run-Id": runId },
@@ -586,18 +610,32 @@ export default function SupervisorWorkspace() {
         if (["control.done", "control.error", "run.failed"].includes(event.type)) terminalEvent = true;
         handleSupervisorEvent(chatId, runId, event);
       }
+      if (controller.signal.aborted) throw new Error("La ejecución fue interrumpida.");
       if (!controller.signal.aborted && !terminalEvent) throw new Error("La transmisión terminó antes de confirmar el resultado.");
     } catch (error) {
       const interrupted = controller.signal.aborted;
       const message = interrupted ? "La ejecución fue interrumpida." : error instanceof Error ? error.message : String(error);
       if (attachments.length && !responseStarted) setPendingAttachments((current) => ({ ...current, [chatId]: [...attachments, ...(current[chatId] || [])] }));
-      if (responseStarted && !interrupted && !terminalEvent) {
+      if (softTimedOut) {
+        const reason = "se alcanzó el margen seguro del límite de 300 segundos de Vercel Hobby";
+        updateChat(chatId, (chat) => ({
+          ...chat,
+          running: false,
+          runId: "",
+          status: "Continuación disponible",
+          error: "Pausé el turno antes del límite de 300 segundos de Vercel Hobby. Podés seguir con el contexto que ya quedó guardado en este chat.",
+          continuationPrompt: continuationPromptFor(reason),
+          updatedAt: Date.now(),
+        }));
+        system(chatId, "Turno pausado por límite de tiempo. Podés continuar desde acá.");
+      } else if (responseStarted && !interrupted && !terminalEvent) {
         updateChat(chatId, (chat) => ({ ...chat, running: true, status: "Consultando estado del turno…", error: "", updatedAt: Date.now() }));
       } else {
-        updateChat(chatId, (chat) => ({ ...chat, running: false, status: interrupted ? "Turno interrumpido" : "Turno detenido", error: message, updatedAt: Date.now() }));
+        updateChat(chatId, (chat) => ({ ...chat, running: false, runId: "", status: interrupted ? "Turno interrumpido" : "Turno detenido", error: message, updatedAt: Date.now() }));
         system(chatId, message, "bad");
       }
     } finally {
+      if (softTimeout) window.clearTimeout(softTimeout);
       activeRunsRef.current.delete(runId);
     }
   }
@@ -624,6 +662,12 @@ export default function SupervisorWorkspace() {
     setPendingAttachments((current) => ({ ...current, [chatId]: [] }));
     try { await startSupervisorRun(chatId, chat.retryPrompt, false, attachments); }
     finally { retryLocks.current.delete(chatId); }
+  }
+
+  async function continueSupervisorRun(chatId: string) {
+    const chat = chatsRef.current.find((item) => item.id === chatId);
+    if (!chat?.continuationPrompt || chat.running) return;
+    await startSupervisorRun(chatId, chat.continuationPrompt);
   }
 
   async function startAgentRun(chatId: string, name: string) {
@@ -781,7 +825,7 @@ export default function SupervisorWorkspace() {
         <header className={s.chatHeader}><button aria-label="Volver a chats" className={s.mobileBack} onClick={() => setMobileListOpen(true)}>‹</button><span className={s.supervisorAvatar}>S</span><div className={s.headerCopy}><strong>Supervisor</strong><span>{active.title} · {active.running ? active.status : "listo"}</span></div><button aria-label="Abrir chats de agentes" className={s.agentToggle} onClick={() => setMobileAgentsOpen(true)}>{parallelThreads.length ? `${parallelThreads.length} agentes` : "Agentes"}</button><button ref={settingsTriggerRef} aria-label="Abrir configuración" aria-expanded={settingsOpen} aria-controls="supervisor-settings" className={s.iconButton} onClick={() => setSettingsOpen(true)}>⚙</button></header>
         <div className={s.contextBar}><span>{modeLabel(active.mode)}</span><span>{providerLabel(active.provider)} · {selectedModel?.displayName || selectedModel?.name || active.model || "modelo"}</span>{active.repo && <span>repo · {active.repo}</span>}{active.queuedSupervisor.length > 0 && <span className={s.queueChip}>{active.queuedSupervisor.length} en cola</span>}{active.pullRequests.length > 0 && <button type="button" className={s.prQuickButton} aria-label={`Abrir lista de ${active.pullRequests.length} Pull Requests`} aria-expanded={prQuickOpen} onClick={() => setPrQuickOpen((open) => !open)}>PRs · {active.pullRequests.length}</button>}</div>
         <div className={s.messages}><div className={s.stack}>{prQuickOpen && active.pullRequests.length > 0 && <section className={s.prQuickList} aria-label="Lista rápida de Pull Requests"><div className={s.prQuickHeader}><strong>Pull Requests del chat</strong><button type="button" aria-label="Cerrar lista de Pull Requests" onClick={() => setPrQuickOpen(false)}>×</button></div>{active.pullRequests.slice().reverse().map((pr) => <a className={s.prQuickItem} key={pr.url} href={pr.url} target="_blank" rel="noreferrer"><span>{pr.repo || pr.url} {pr.number ? `#${pr.number}` : "↗"}</span><small>{pr.branch || "Abrir en GitHub"}</small></a>)}</section>}{active.messages.length === 0 && <div className={s.welcome}><div className={s.welcomeAvatar}>S</div><h1>Hablá con Supervisor</h1><p>Supervisor coordina el equipo. Los especialistas aparecen a la derecha como chats paralelos.</p></div>}{renderToolGroups(active.messages, "Supervisor", renderSupervisorMessage)}{active.pullRequests.length === 0 && active.diffStat && <div className={s.delivery}><strong>Cambios preparados</strong><pre>{active.diffStat}</pre></div>}<div ref={endRef} /></div></div>
-        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>{active.status === "Estado por confirmar" ? "Estado del turno incierto:" : "Ocurrió un error:"}</strong> {active.error}{active.retryPrompt && <div className={s.retryControls}><button type="button" onClick={() => void retryPublication(active.id)} disabled={active.running || !githubConnected || (active.provider === "chatgpt" && !chatGPTConnected) || (active.retryNeedsAttachments && !supervisorAttachments.length)}>Reintentar</button><small>Se volverá a ejecutar el pedido para crear el PR.</small>{!githubConnected && <small>Reconectá GitHub para habilitar el reintento.</small>}{githubConnected && active.retryNeedsAttachments && !supervisorAttachments.length && <small>Volvé a adjuntar los archivos del pedido antes de reintentar.</small>}</div>}</div>}{attachmentChips(active.id, supervisorAttachments)}<div className={s.composer}><input ref={supervisorFileRef} className={s.hiddenFile} type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.html,.docx,.xlsx,.zip" onChange={(event) => { void attachFiles(active.id, event.target.files); event.target.value = ""; }} /><button type="button" aria-label="Adjuntar imágenes o archivos" title="Adjuntar imágenes o archivos" className={s.plus} onClick={() => supervisorFileRef.current?.click()}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby={sendHint ? "supervisor-send-hint" : undefined} value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Otra instrucción (queda en cola)…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button></div>{attachmentError && <small className={s.attachmentError} role="alert">{attachmentError}</small>}{sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</footer>
+        <footer className={s.composerShell}>{active.running && <div className={s.runningBanner} role="status" aria-live="polite"><span className={s.spinner} /><div><strong>{parallelThreads.some((thread) => thread.status === "running") ? `Coordinando con ${parallelThreads.filter((thread) => thread.status === "running").map((thread) => thread.displayName).join(", ")}` : "Supervisor está pensando…"}</strong><small>{active.status}</small></div>{active.queuedSupervisor.length > 0 && <b>{active.queuedSupervisor.length} en cola</b>}</div>}{active.error && <div className={s.errorBanner} role="alert"><strong>{active.status === "Estado por confirmar" ? "Estado del turno incierto:" : active.status === "Continuación disponible" ? "Turno pausado:" : "Ocurrió un error:"}</strong> {active.error}{active.continuationPrompt && <div className={s.retryControls}><button type="button" onClick={() => void continueSupervisorRun(active.id)} disabled={active.running || (active.provider === "chatgpt" && !chatGPTConnected) || (active.provider === "copilot" && !githubConnected)}>Continuar</button><small>Se abrirá un turno nuevo con el historial de este chat como contexto.</small>{active.provider === "chatgpt" && !chatGPTConnected && <small>Reconectá ChatGPT para continuar.</small>}{active.provider === "copilot" && !githubConnected && <small>Reconectá GitHub para continuar con Copilot.</small>}</div>}{active.retryPrompt && <div className={s.retryControls}><button type="button" onClick={() => void retryPublication(active.id)} disabled={active.running || !githubConnected || (active.provider === "chatgpt" && !chatGPTConnected) || (active.retryNeedsAttachments && !supervisorAttachments.length)}>Reintentar</button><small>Se volverá a ejecutar el pedido para crear el PR.</small>{!githubConnected && <small>Reconectá GitHub para habilitar el reintento.</small>}{githubConnected && active.retryNeedsAttachments && !supervisorAttachments.length && <small>Volvé a adjuntar los archivos del pedido antes de reintentar.</small>}</div>}</div>}{attachmentChips(active.id, supervisorAttachments)}<div className={s.composer}><input ref={supervisorFileRef} className={s.hiddenFile} type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json,.xml,.html,.docx,.xlsx,.zip" onChange={(event) => { void attachFiles(active.id, event.target.files); event.target.value = ""; }} /><button type="button" aria-label="Adjuntar imágenes o archivos" title="Adjuntar imágenes o archivos" className={s.plus} onClick={() => supervisorFileRef.current?.click()}>＋</button><textarea aria-label="Mensaje a Supervisor" aria-describedby={sendHint ? "supervisor-send-hint" : undefined} value={active.draft} onChange={(e) => updateChat(active.id, (chat) => ({ ...chat, draft: e.target.value }))} onKeyDown={keyDown} placeholder={active.running ? "Otra instrucción (queda en cola)…" : "Mensaje a Supervisor…"} rows={1} /><button aria-label="Enviar mensaje" className={s.send} onClick={sendSupervisor} disabled={!canSendSupervisor}>➤</button></div>{attachmentError && <small className={s.attachmentError} role="alert">{attachmentError}</small>}{sendHint && <small id="supervisor-send-hint" className={s.composerHint}>{sendHint}</small>}</footer>
       </section>
 
       <aside className={s.agentRail}>
