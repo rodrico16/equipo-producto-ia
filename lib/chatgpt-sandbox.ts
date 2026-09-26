@@ -232,7 +232,7 @@ probe_output="$(cat "$output_file" 2>/dev/null || true)"
 
 printf 'Codex bwrap preflight failed (mode=%s, path=%s): %s\\n' "$permissions" "$bwrap_bin" "$probe_output" >&2
 if printf '%s' "$probe_output" | grep -Fq 'Unexpected capabilities but not setuid'; then
-  echo "The user-local bwrap copy still has file capabilities; the Sandbox cannot remove them with setcap." >&2
+  echo "setpriv did not clear the inherited capabilities before starting bwrap." >&2
 fi
 if printf '%s' "$probe_output" | grep -Fq 'Operation not permitted'; then
   echo "The Vercel Sandbox runtime does not allow the namespaces required by Codex. No unsandboxed fallback was started." >&2
@@ -257,11 +257,11 @@ run_privileged() {
 
 if ! command -v bwrap >/dev/null 2>&1; then
   if command -v dnf >/dev/null 2>&1; then
-    run_privileged dnf install -y bubblewrap
+    run_privileged dnf install -y bubblewrap util-linux
   elif command -v microdnf >/dev/null 2>&1; then
-    run_privileged microdnf install -y bubblewrap
+    run_privileged microdnf install -y bubblewrap util-linux
   elif command -v yum >/dev/null 2>&1; then
-    run_privileged yum install -y bubblewrap
+    run_privileged yum install -y bubblewrap util-linux
   elif command -v apt-get >/dev/null 2>&1; then
     apt_sources="$(find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print 2>/dev/null || true)"
     if [ -n "$apt_sources" ]; then
@@ -277,9 +277,9 @@ if ! command -v bwrap >/dev/null 2>&1; then
       done <<< "$apt_sources"
     fi
     run_privileged apt-get update -qq
-    run_privileged apt-get install -y bubblewrap
+    run_privileged apt-get install -y bubblewrap util-linux
   elif command -v apk >/dev/null 2>&1; then
-    run_privileged apk add --no-cache bubblewrap
+    run_privileged apk add --no-cache bubblewrap util-linux
   else
     os_description="$(
       PRETTY_NAME=unknown
@@ -291,21 +291,27 @@ if ! command -v bwrap >/dev/null 2>&1; then
   fi
 fi
 
-system_bwrap="$(command -v bwrap || true)"
-if [ -z "$system_bwrap" ]; then
-  echo "The package installation completed without providing bwrap." >&2
+if ! command -v setpriv >/dev/null 2>&1; then
+  echo "setpriv from util-linux is required to clear capabilities before launching bwrap." >&2
+  exit 127
+fi
+
+system_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+system_bwrap="$(PATH="$system_path" command -v bwrap || true)"
+setpriv_bin="$(PATH="$system_path" command -v setpriv || true)"
+if [ -z "$system_bwrap" ] || [ -z "$setpriv_bin" ]; then
+  echo "Could not locate the system bwrap and setpriv executables." >&2
   exit 70
 fi
+
 mkdir -p "$HOME/.local/bin"
-clean_bwrap="$HOME/.local/bin/bwrap"
-if [ "$system_bwrap" != "$clean_bwrap" ]; then
-  rm -f "$clean_bwrap"
-  if ! cat "$system_bwrap" > "$clean_bwrap"; then
-    echo "Could not create a clean user-local bwrap copy." >&2
-    exit 70
-  fi
-  chmod 0755 "$clean_bwrap"
-fi
+bwrap_wrapper="$HOME/.local/bin/bwrap"
+cat > "$bwrap_wrapper" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$setpriv_bin" --inh-caps=-all --ambient-caps=-all -- "$system_bwrap" "\$@"
+EOF
+chmod 0755 "$bwrap_wrapper"
 `;
 
   const result = await sandbox.runCommand("bash", ["-lc", installScript]);
