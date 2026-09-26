@@ -206,6 +206,79 @@ child.on("close", async (code, signal) => {
 });
 `;
 
+export const CODEX_BWRAP_PREFLIGHT = String.raw`#!/usr/bin/env bash
+set -uo pipefail
+
+bwrap_bin="$(command -v bwrap || true)"
+if [ -z "$bwrap_bin" ]; then
+  echo "bwrap is missing from the Vercel Sandbox runtime." >&2
+  exit 127
+fi
+
+permissions="$(stat -c '%a' "$bwrap_bin" 2>/dev/null || true)"
+if [ -z "$permissions" ]; then
+  echo "Could not read bwrap permissions inside the Vercel Sandbox." >&2
+  exit 70
+fi
+
+is_setuid=0
+if (( (8#$permissions & 04000) != 0 )); then
+  is_setuid=1
+fi
+
+output_file="$(mktemp)"
+trap 'rm -f "$output_file"' EXIT
+if "$bwrap_bin" --ro-bind / / true >"$output_file" 2>&1; then
+  exit 0
+fi
+probe_output="$(cat "$output_file" 2>/dev/null || true)"
+
+if [ "$is_setuid" -eq 0 ] && printf '%s' "$probe_output" | grep -Fq 'Unexpected capabilities but not setuid'; then
+  if command -v setcap >/dev/null 2>&1; then
+    if [ "$(id -u)" -eq 0 ]; then
+      if ! setcap -r "$bwrap_bin"; then
+        echo "bwrap reports stale file capabilities, but setcap could not remove them." >&2
+        exit 70
+      fi
+    elif command -v sudo >/dev/null 2>&1; then
+      if ! sudo -n setcap -r "$bwrap_bin"; then
+        echo "bwrap reports stale file capabilities, but sudo setcap could not remove them." >&2
+        exit 70
+      fi
+    else
+      echo "bwrap reports stale file capabilities, but setcap is unavailable." >&2
+      exit 70
+    fi
+
+    if "$bwrap_bin" --ro-bind / / true >"$output_file" 2>&1; then
+      exit 0
+    fi
+    probe_output="$(cat "$output_file" 2>/dev/null || true)"
+  else
+    echo "bwrap reports stale file capabilities, but setcap is unavailable." >&2
+    exit 70
+  fi
+fi
+
+printf 'Codex bwrap preflight failed (mode=%s): %s\n' "$permissions" "$probe_output" >&2
+if printf '%s' "$probe_output" | grep -Fq 'Operation not permitted'; then
+  echo "The Vercel Sandbox runtime does not allow the namespaces required by Codex. No unsandboxed fallback was started." >&2
+fi
+exit 70
+`;
+
+async function ensureCodexSandbox(sandbox: Sandbox) {
+  const result = await sandbox.runCommand("bash", ["-lc", CODEX_BWRAP_PREFLIGHT]);
+  if (result.exitCode !== 0) {
+    const details = (await result.stderr()).trim().slice(-1200);
+    throw new Error(
+      details
+        ? `Codex sandbox preflight failed: ${details}`
+        : "Codex sandbox preflight failed inside Vercel Sandbox.",
+    );
+  }
+}
+
 export const CHATGPT_AUTH_NETWORK_POLICY = {
   allow: [
     "chatgpt.com",
@@ -302,6 +375,7 @@ export async function createChatGPTWorkerSandbox(authJson: string, timeout = 20 
     networkPolicy: CHATGPT_WORKER_NETWORK_POLICY,
   });
   await ensureCodex(sandbox);
+  await ensureCodexSandbox(sandbox);
   await restoreAuth(sandbox, authJson);
   await installCodexEventBridge(sandbox);
   return sandbox;
