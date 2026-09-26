@@ -296,9 +296,9 @@ if ! command -v bwrap >/dev/null 2>&1; then
   else
     os_description="$(
       . /etc/os-release 2>/dev/null || true
-      printf '%s' "${PRETTY_NAME:-unknown}"
+      printf '%s' "\${PRETTY_NAME:-unknown}"
     )"
-    echo "bwrap is missing and no supported package manager is available in the Vercel Sandbox runtime (os=${os_description}; checked: dnf, microdnf, yum, apt-get, apk)." >&2
+    echo "bwrap is missing and no supported package manager is available in the Vercel Sandbox runtime (os=\${os_description}; checked: dnf, microdnf, yum, apt-get, apk)." >&2
     exit 127
   fi
 fi
