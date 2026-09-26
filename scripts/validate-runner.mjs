@@ -51,6 +51,17 @@ try {
   const bwrapCheck = sandboxSource.indexOf("await ensureCodexSandbox(sandbox);", workerSetup);
   if (workerSetup < 0 || bwrapCheck < 0) throw new Error("Bubblewrap must be installed before the Codex preflight");
 
+  const installerScript = sandboxSource.match(/const installScript = String\\.raw`([\\s\\S]*?)`;/);
+  if (!installerScript) throw new Error("Bubblewrap installer shell script is missing");
+  const installerFile = path.join(dir, "install-bubblewrap.sh");
+  await writeFile(installerFile, installerScript[1], "utf8");
+  const installerCheck = spawnSync("bash", ["-n", installerFile], { encoding: "utf8" });
+  if (installerCheck.status !== 0) {
+    process.stderr.write(installerCheck.stderr || installerCheck.stdout);
+    process.exit(installerCheck.status ?? 1);
+  }
+  console.log("Bubblewrap installer shell syntax: OK");
+
   const preflight = sandboxSource.match(/export const CODEX_BWRAP_PREFLIGHT = String\.raw`([\s\S]*?)`;/);
   if (!preflight) throw new Error("Codex bwrap preflight is missing");
   for (const required of [
