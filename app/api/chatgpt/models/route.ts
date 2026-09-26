@@ -54,6 +54,9 @@ export async function GET() {
     return Response.json({ models });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (message !== "SESSION_REQUIRED") {
+      console.error("[chatgpt/models] Codex model lookup failed", { message: message.slice(0, 1600) });
+    }
     if (isAuthError(message)) {
       await clearCodexAuth();
       return Response.json({ error: "La sesión de ChatGPT venció. Reconectá tu cuenta para continuar.", models: [], authExpired: true }, { status: 401 });

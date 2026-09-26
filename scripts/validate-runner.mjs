@@ -31,9 +31,21 @@ try {
   if (!installer) throw new Error("Vercel Sandbox bubblewrap installer is missing");
   for (const required of [
     "dnf install -y bubblewrap",
+    "microdnf install -y bubblewrap",
+    "yum install -y bubblewrap",
+    "apt-get update -qq",
+    "apt-get install -y bubblewrap",
+    "https://archive.ubuntu.com/",
+    "https://security.ubuntu.com/",
+    "https://deb.debian.org/",
+    "apk add --no-cache bubblewrap",
+    "no supported package manager is available",
     "command -v bwrap",
     "Could not provision bubblewrap in Vercel Sandbox",
     "cdn.amazonlinux.com",
+    "archive.ubuntu.com",
+    "deb.debian.org",
+    "dl-cdn.alpinelinux.org",
     "al2023-repos-us-east-1-de612dc2.s3.dualstack.us-east-1.amazonaws.com",
   ]) {
     if (!sandboxSource.includes(required)) throw new Error(`Bubblewrap installer is missing: ${required}`);
@@ -42,11 +54,22 @@ try {
   const bwrapCheck = sandboxSource.indexOf("await ensureCodexSandbox(sandbox);", workerSetup);
   if (workerSetup < 0 || bwrapCheck < 0) throw new Error("Bubblewrap must be installed before the Codex preflight");
 
+  const installerScript = sandboxSource.match(/const installScript = String\.raw`([\s\S]*?)`;/);
+  if (!installerScript) throw new Error("Bubblewrap installer shell script is missing");
+  const installerFile = path.join(dir, "install-bubblewrap.sh");
+  await writeFile(installerFile, installerScript[1], "utf8");
+  const installerCheck = spawnSync("bash", ["-n", installerFile], { encoding: "utf8" });
+  if (installerCheck.status !== 0) {
+    process.stderr.write(installerCheck.stderr || installerCheck.stdout);
+    process.exit(installerCheck.status ?? 1);
+  }
+  console.log("Bubblewrap installer shell syntax: OK");
+
   const preflight = sandboxSource.match(/export const CODEX_BWRAP_PREFLIGHT = String\.raw`([\s\S]*?)`;/);
   if (!preflight) throw new Error("Codex bwrap preflight is missing");
   for (const required of [
     "Unexpected capabilities but not setuid",
-    "setcap -r",
+    "--ambient-caps=-all",
     "--ro-bind / / true",
     "Operation not permitted",
     "No unsandboxed fallback was started",
@@ -61,6 +84,15 @@ try {
     process.exit(shellCheck.status ?? 1);
   }
   console.log("Codex bwrap preflight syntax and guardrails: OK");
+
+  const codexSource = await readFile("lib/chatgpt-codex.ts", "utf8");
+  if (!codexSource.includes("createChatGPTRpcSandbox(authJson)")) {
+    throw new Error("Codex model/account RPC must not depend on the execution worker sandbox");
+  }
+  if (codexSource.includes("createChatGPTWorkerSandbox(authJson, 90_000)")) {
+    throw new Error("Codex RPC still starts the full execution worker");
+  }
+  console.log("Codex model/account RPC isolation: OK");
 
 } finally {
   await rm(dir, { recursive: true, force: true });

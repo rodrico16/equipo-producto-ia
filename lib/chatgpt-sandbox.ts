@@ -10,6 +10,7 @@ import path from "node:path";
 const args = process.argv.slice(2);
 const jsonMode = args.includes("--json");
 const home = os.homedir();
+process.env.PATH = path.join(home, ".local", "bin") + path.delimiter + (process.env.PATH || "");
 const realCodex = process.env.CODEX_REAL_BIN || path.join(home, ".local", "bin", "codex-real");
 const sessionsDir = path.join(home, ".codex", "sessions");
 const startedAt = Date.now();
@@ -208,6 +209,7 @@ child.on("close", async (code, signal) => {
 
 export const CODEX_BWRAP_PREFLIGHT = String.raw`#!/usr/bin/env bash
 set -uo pipefail
+export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 bwrap_bin="$(command -v bwrap || true)"
 if [ -z "$bwrap_bin" ]; then
@@ -221,11 +223,6 @@ if [ -z "$permissions" ]; then
   exit 70
 fi
 
-is_setuid=0
-if (( (8#$permissions & 04000) != 0 )); then
-  is_setuid=1
-fi
-
 output_file="$(mktemp)"
 trap 'rm -f "$output_file"' EXIT
 if "$bwrap_bin" --ro-bind / / true >"$output_file" 2>&1; then
@@ -233,34 +230,10 @@ if "$bwrap_bin" --ro-bind / / true >"$output_file" 2>&1; then
 fi
 probe_output="$(cat "$output_file" 2>/dev/null || true)"
 
-if [ "$is_setuid" -eq 0 ] && printf '%s' "$probe_output" | grep -Fq 'Unexpected capabilities but not setuid'; then
-  if command -v setcap >/dev/null 2>&1; then
-    if [ "$(id -u)" -eq 0 ]; then
-      if ! setcap -r "$bwrap_bin"; then
-        echo "bwrap reports stale file capabilities, but setcap could not remove them." >&2
-        exit 70
-      fi
-    elif command -v sudo >/dev/null 2>&1; then
-      if ! sudo -n setcap -r "$bwrap_bin"; then
-        echo "bwrap reports stale file capabilities, but sudo setcap could not remove them." >&2
-        exit 70
-      fi
-    else
-      echo "bwrap reports stale file capabilities, but setcap is unavailable." >&2
-      exit 70
-    fi
-
-    if "$bwrap_bin" --ro-bind / / true >"$output_file" 2>&1; then
-      exit 0
-    fi
-    probe_output="$(cat "$output_file" 2>/dev/null || true)"
-  else
-    echo "bwrap reports stale file capabilities, but setcap is unavailable." >&2
-    exit 70
-  fi
+printf 'Codex bwrap preflight failed (mode=%s, path=%s): %s\\n' "$permissions" "$bwrap_bin" "$probe_output" >&2
+if printf '%s' "$probe_output" | grep -Fq 'Unexpected capabilities but not setuid'; then
+  echo "setpriv did not clear the inherited capabilities before starting bwrap." >&2
 fi
-
-printf 'Codex bwrap preflight failed (mode=%s): %s\n' "$permissions" "$probe_output" >&2
 if printf '%s' "$probe_output" | grep -Fq 'Operation not permitted'; then
   echo "The Vercel Sandbox runtime does not allow the namespaces required by Codex. No unsandboxed fallback was started." >&2
 fi
@@ -268,20 +241,83 @@ exit 70
 `;
 
 async function ensureBubblewrapInstalled(sandbox: Sandbox) {
-  const result = await sandbox.runCommand("bash", [
-    "-lc",
-    [
-      "set -euo pipefail",
-      "if command -v bwrap >/dev/null 2>&1; then exit 0; fi",
-      "if ! command -v dnf >/dev/null 2>&1; then echo 'bwrap is missing and dnf is unavailable in the Vercel Sandbox runtime.' >&2; exit 127; fi",
-      "if [ \"$(id -u)\" -eq 0 ]; then dnf install -y bubblewrap",
-      "elif command -v sudo >/dev/null 2>&1; then sudo -n dnf install -y bubblewrap",
-      "else echo 'bwrap is missing and the Vercel Sandbox runtime cannot install system packages.' >&2; exit 77; fi",
-      "command -v bwrap >/dev/null 2>&1 || { echo 'Amazon Linux package installation finished without providing bwrap.' >&2; exit 70; }",
-    ].join("; "),
-  ]);
+  const installScript = String.raw`set -euo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
+run_privileged() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo -n "$@"
+  else
+    echo "bwrap is missing and no root/sudo access is available to install it." >&2
+    return 77
+  fi
+}
+
+if ! command -v bwrap >/dev/null 2>&1; then
+  if command -v dnf >/dev/null 2>&1; then
+    run_privileged dnf install -y bubblewrap util-linux
+  elif command -v microdnf >/dev/null 2>&1; then
+    run_privileged microdnf install -y bubblewrap util-linux
+  elif command -v yum >/dev/null 2>&1; then
+    run_privileged yum install -y bubblewrap util-linux
+  elif command -v apt-get >/dev/null 2>&1; then
+    apt_sources="$(find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print 2>/dev/null || true)"
+    if [ -n "$apt_sources" ]; then
+      while IFS= read -r apt_source; do
+        [ -n "$apt_source" ] || continue
+        run_privileged sed -i \
+          -e 's#http://archive.ubuntu.com/#https://archive.ubuntu.com/#g' \
+          -e 's#http://security.ubuntu.com/#https://security.ubuntu.com/#g' \
+          -e 's#http://ports.ubuntu.com/#https://ports.ubuntu.com/#g' \
+          -e 's#http://deb.debian.org/#https://deb.debian.org/#g' \
+          -e 's#http://security.debian.org/#https://security.debian.org/#g' \
+          "$apt_source"
+      done <<< "$apt_sources"
+    fi
+    run_privileged apt-get update -qq
+    run_privileged apt-get install -y bubblewrap util-linux
+  elif command -v apk >/dev/null 2>&1; then
+    run_privileged apk add --no-cache bubblewrap util-linux
+  else
+    os_description="$(
+      PRETTY_NAME=unknown
+      . /etc/os-release 2>/dev/null || true
+      printf '%s' "$PRETTY_NAME"
+    )"
+    echo "bwrap is missing and no supported package manager is available in the Vercel Sandbox runtime (os=$os_description; checked: dnf, microdnf, yum, apt-get, apk)." >&2
+    exit 127
+  fi
+fi
+
+if ! command -v setpriv >/dev/null 2>&1; then
+  echo "setpriv from util-linux is required to clear capabilities before launching bwrap." >&2
+  exit 127
+fi
+
+system_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+system_bwrap="$(PATH="$system_path" command -v bwrap || true)"
+setpriv_bin="$(PATH="$system_path" command -v setpriv || true)"
+if [ -z "$system_bwrap" ] || [ -z "$setpriv_bin" ]; then
+  echo "Could not locate the system bwrap and setpriv executables." >&2
+  exit 70
+fi
+
+mkdir -p "$HOME/.local/bin"
+bwrap_wrapper="$HOME/.local/bin/bwrap"
+cat > "$bwrap_wrapper" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$setpriv_bin" --inh-caps=-all --ambient-caps=-all -- "$system_bwrap" "\$@"
+EOF
+chmod 0755 "$bwrap_wrapper"
+`;
+
+  const result = await sandbox.runCommand("bash", ["-lc", installScript]);
   if (result.exitCode !== 0) {
-    const details = (await result.stderr()).trim().slice(-1600);
+    const [stderr, stdout] = await Promise.all([result.stderr(), result.stdout()]);
+    const details = [stderr, stdout].map((value) => value.trim()).filter(Boolean).join("\n").slice(-2000);
     throw new Error(
       details
         ? `Could not provision bubblewrap in Vercel Sandbox: ${details}`
@@ -323,6 +359,13 @@ export const CHATGPT_WORKER_NETWORK_POLICY = {
     "files.pythonhosted.org",
     "cdn.amazonlinux.com",
     "al2023-repos-us-east-1-de612dc2.s3.dualstack.us-east-1.amazonaws.com",
+    "al2023-repos-us-east-1-de612dc2.s3.us-east-1.amazonaws.com",
+    "archive.ubuntu.com",
+    "security.ubuntu.com",
+    "ports.ubuntu.com",
+    "deb.debian.org",
+    "security.debian.org",
+    "dl-cdn.alpinelinux.org",
   ],
 };
 
@@ -391,6 +434,22 @@ export async function createChatGPTAuthSandbox() {
   });
   await ensureCodex(sandbox);
   return sandbox;
+}
+
+export async function createChatGPTRpcSandbox(authJson: string) {
+  const sandbox = await Sandbox.create({
+    persistent: false,
+    timeout: 90_000,
+    networkPolicy: CHATGPT_AUTH_NETWORK_POLICY,
+  });
+  try {
+    await ensureCodex(sandbox);
+    await restoreAuth(sandbox, authJson);
+    return sandbox;
+  } catch (error) {
+    await sandbox.stop().catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function createChatGPTWorkerSandbox(authJson: string, timeout = 20 * 60 * 1000) {
