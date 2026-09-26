@@ -208,6 +208,7 @@ child.on("close", async (code, signal) => {
 
 export const CODEX_BWRAP_PREFLIGHT = String.raw`#!/usr/bin/env bash
 set -uo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 bwrap_bin="$(command -v bwrap || true)"
 if [ -z "$bwrap_bin" ]; then
@@ -269,6 +270,7 @@ exit 70
 
 async function ensureBubblewrapInstalled(sandbox: Sandbox) {
   const installScript = String.raw`set -euo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 run_privileged() {
   if [ "$(id -u)" -eq 0 ]; then
