@@ -69,7 +69,7 @@ try {
   if (!preflight) throw new Error("Codex bwrap preflight is missing");
   for (const required of [
     "Unexpected capabilities but not setuid",
-    "user-local bwrap copy",
+    "--ambient-caps=-all",
     "--ro-bind / / true",
     "Operation not permitted",
     "No unsandboxed fallback was started",
