@@ -216,6 +216,7 @@ if [ -z "$bwrap_bin" ]; then
   echo "bwrap is missing from the Vercel Sandbox runtime." >&2
   exit 127
 fi
+setpriv_bin="$(command -v setpriv || true)"
 
 permissions="$(stat -c '%a' "$bwrap_bin" 2>/dev/null || true)"
 if [ -z "$permissions" ]; then
@@ -225,7 +226,12 @@ fi
 
 output_file="$(mktemp)"
 trap 'rm -f "$output_file"' EXIT
-if "$bwrap_bin" --ro-bind / / true >"$output_file" 2>&1; then
+if [ -n "$setpriv_bin" ]; then
+  probe_command=("$setpriv_bin" "--inh-caps=-all" "--ambient-caps=-all" "--" "$bwrap_bin")
+else
+  probe_command=("$bwrap_bin")
+fi
+if "${probe_command[@]}" --ro-bind / / true >"$output_file" 2>&1; then
   exit 0
 fi
 probe_output="$(cat "$output_file" 2>/dev/null || true)"
