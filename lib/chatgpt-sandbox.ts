@@ -281,7 +281,8 @@ async function ensureBubblewrapInstalled(sandbox: Sandbox) {
     ].join("; "),
   ]);
   if (result.exitCode !== 0) {
-    const details = (await result.stderr()).trim().slice(-1600);
+    const [stderr, stdout] = await Promise.all([result.stderr(), result.stdout()]);
+    const details = [stderr, stdout].map((value) => value.trim()).filter(Boolean).join("\\n").slice(-2000);
     throw new Error(
       details
         ? `Could not provision bubblewrap in Vercel Sandbox: ${details}`
@@ -391,6 +392,22 @@ export async function createChatGPTAuthSandbox() {
   });
   await ensureCodex(sandbox);
   return sandbox;
+}
+
+export async function createChatGPTRpcSandbox(authJson: string) {
+  const sandbox = await Sandbox.create({
+    persistent: false,
+    timeout: 90_000,
+    networkPolicy: CHATGPT_AUTH_NETWORK_POLICY,
+  });
+  try {
+    await ensureCodex(sandbox);
+    await restoreAuth(sandbox, authJson);
+    return sandbox;
+  } catch (error) {
+    await sandbox.stop().catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function createChatGPTWorkerSandbox(authJson: string, timeout = 20 * 60 * 1000) {
