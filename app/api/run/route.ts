@@ -387,8 +387,10 @@ export async function POST(request: Request) {
           controller.enqueue(line({ type: "team.loaded", data: { count: teamCount, provider: "chatgpt" } }));
 
           const teamPrompt = [
-            "Act as the parent coordinator for the AI Product Team.",
-            "Use the custom agents available in .codex/agents. Delegate planning/orchestration to the custom agent named supervisor first, then have the supervisor use the relevant specialist agents for product, UX, architecture, engineering, QA, security, data or operations as needed.",
+            "You are the single primary Supervisor for this run. Coordinate directly; do not delegate to the custom agent named supervisor or create a nested supervisor layer.",
+            "Use no more than two specialist agents, and only for narrow, independent work that materially improves the result. Avoid open-ended reviews, broad coverage audits, unrelated skills, and unnecessary research.",
+            "Wait for each specialist you start to return its findings. If a specialist is still running after 90 seconds, continue with your own evidence and implementation, and report the review as pending instead of blocking the user turn.",
+            "This route runs on Vercel Hobby with a hard 300-second request limit. Prioritize the requested implementation and focused verification, then return a concise final summary; do not spend the turn on optional reviews.",
             "Implement the task completely in this repository. Inspect existing conventions before changing code. Run appropriate verification/tests. Do not commit, push, create a PR, expose credentials, or modify git remotes; the Control Room handles delivery after you finish.",
             "Keep unrelated files untouched. Finish with a concise implementation and verification summary.",
             "",
