@@ -62,6 +62,15 @@ try {
   }
   console.log("Codex bwrap preflight syntax and guardrails: OK");
 
+  const codexSource = await readFile("lib/chatgpt-codex.ts", "utf8");
+  if (!codexSource.includes("createChatGPTRpcSandbox(authJson)")) {
+    throw new Error("Codex model/account RPC must not depend on the execution worker sandbox");
+  }
+  if (codexSource.includes("createChatGPTWorkerSandbox(authJson, 90_000)")) {
+    throw new Error("Codex RPC still starts the full execution worker");
+  }
+  console.log("Codex model/account RPC isolation: OK");
+
 } finally {
   await rm(dir, { recursive: true, force: true });
 }
