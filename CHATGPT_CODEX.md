@@ -36,6 +36,8 @@ SESSION_SECRET=
 
 Los modelos ChatGPT/Codex no están hardcodeados. El endpoint `/api/chatgpt/models` consulta `model/list` del Codex App Server y devuelve los modelos disponibles para la cuenta autenticada, junto con el modelo recomendado y sus niveles de razonamiento soportados.
 
+En la UI, **Auto** no fuerza `model_reasoning_effort`: deja que Codex use el valor recomendado para el modelo efectivo. Los niveles explícitos solo se envían cuando el modelo activo los reporta como soportados; si el usuario cambia de proveedor o modelo y el esfuerzo deja de ser compatible, el Control Room lo descarta antes de ejecutar.
+
 ## Endpoints
 
 - `POST /api/chatgpt/login` inicia device authorization.
