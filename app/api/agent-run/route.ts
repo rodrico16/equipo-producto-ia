@@ -1,6 +1,7 @@
 import { Sandbox } from "@vercel/sandbox";
 import { readCodexAuth } from "@/lib/chatgpt-auth-cookie";
 import { createChatGPTWorkerSandbox } from "@/lib/chatgpt-sandbox";
+import { codexProviderFrom, qwenCodexEnv, qwenConfigured, qwenModel, type CodexProvider } from "@/lib/codex-provider";
 import { directAgentRunnerSource } from "@/lib/direct-agent-runner-source";
 import { presentRuntimeError } from "@/lib/runtime-error";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
@@ -10,7 +11,7 @@ import { validateAttachments, writeRunAttachments, type RunAttachment } from "@/
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-type Provider = "copilot" | "chatgpt";
+type Provider = "copilot" | CodexProvider;
 type RunRequest = {
   provider?: Provider;
   agentName?: string;
@@ -95,7 +96,7 @@ function emitCodexEvent(
 
 export async function POST(request: Request) {
   const body = (await request.json()) as RunRequest;
-  const provider: Provider = body.provider === "copilot" ? "copilot" : "chatgpt";
+  const provider: Provider = body.provider === "copilot" ? "copilot" : codexProviderFrom(body.provider);
   let attachments: RunAttachment[];
   try { attachments = validateAttachments(body.attachments); }
   catch (error) { return Response.json({ error: (error as Error).message }, { status: 400 }); }
@@ -132,6 +133,9 @@ export async function POST(request: Request) {
   if (provider === "chatgpt" && !codexAuth) {
     return Response.json({ error: "Conectá ChatGPT para hablar con especialistas" }, { status: 401 });
   }
+  if (provider === "qwen" && !qwenConfigured()) {
+    return Response.json({ error: "Configurá DASHSCOPE_API_KEY para hablar con especialistas usando Qwen" }, { status: 401 });
+  }
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -143,8 +147,8 @@ export async function POST(request: Request) {
           data: { message: `Abriendo chat directo con ${agentName}…` },
         }));
 
-        sandbox = provider === "chatgpt"
-          ? await createChatGPTWorkerSandbox(codexAuth!)
+        sandbox = provider !== "copilot"
+          ? await createChatGPTWorkerSandbox(codexAuth)
           : await Sandbox.create({ timeout: 20 * 60 * 1000, persistent: false, networkPolicy: "allow-all" });
 
         let cwd = "/tmp/direct-agent";
@@ -180,7 +184,7 @@ export async function POST(request: Request) {
                 args: ["clone", "--depth", "1", "--branch", baseBranch, `https://github.com/${repo}.git`, cwd],
               });
           if (clone.exitCode !== 0) throw new Error(`Git clone failed: ${(await clone.stderr()).slice(-1000)}`);
-        } else if (provider === "chatgpt") {
+        } else if (provider !== "copilot") {
           const init = await sandbox.runCommand({ cmd: "git", args: ["init", "-q"], cwd });
           if (init.exitCode !== 0) throw new Error("Could not initialize specialist workspace");
         }
@@ -274,7 +278,8 @@ export async function POST(request: Request) {
             attached.context,
           ].join("\n");
           const args = ["--sandbox", "read-only", "--ask-for-approval", "never"];
-          if (model && model !== "auto") args.push("--model", model);
+          const runModel = provider === "qwen" ? qwenModel(model) : model;
+          if (runModel && runModel !== "auto") args.push("--model", runModel);
           if (reasoningEffort) args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
           args.push("exec", "--json");
           for (const image of attached.images) args.push("--image", image);
@@ -286,6 +291,7 @@ export async function POST(request: Request) {
             args: ["-lc", 'export PATH="$HOME/.local/bin:$PATH"; exec codex "$@"', "codex", ...args],
             cwd,
             detached: true,
+            env: provider === "qwen" ? qwenCodexEnv(model) : undefined,
           });
           let pending = "";
           const diagnostics: string[] = [];

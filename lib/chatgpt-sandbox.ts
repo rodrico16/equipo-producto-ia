@@ -452,7 +452,7 @@ export async function createChatGPTRpcSandbox(authJson: string) {
   }
 }
 
-export async function createChatGPTWorkerSandbox(authJson: string, timeout = 20 * 60 * 1000) {
+export async function createChatGPTWorkerSandbox(authJson?: string | null, timeout = 20 * 60 * 1000) {
   const sandbox = await Sandbox.create({
     persistent: false,
     timeout,

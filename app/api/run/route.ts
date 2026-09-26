@@ -1,6 +1,7 @@
 import { Sandbox } from "@vercel/sandbox";
 import { readCodexAuth } from "@/lib/chatgpt-auth-cookie";
 import { createChatGPTWorkerSandbox } from "@/lib/chatgpt-sandbox";
+import { codexProviderFrom, codexProviderLabel, qwenCodexEnv, qwenConfigured, qwenModel, type CodexProvider } from "@/lib/codex-provider";
 import { copilotRunnerSource } from "@/lib/copilot-runner-source";
 import { presentRuntimeError } from "@/lib/runtime-error";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
@@ -15,7 +16,7 @@ export const maxDuration = 300;
 type RunRequest = {
   repo?: string;
   branch?: string;
-  provider?: "copilot" | "chatgpt";
+  provider?: "copilot" | CodexProvider;
   model?: string;
   reasoningEffort?: string;
   prompt?: string;
@@ -53,7 +54,7 @@ function codexAgentName(item: JsonRecord) {
   return asString(args.agentName) || asString(args.agent_name) || asString(args.agent_type) || asString(args.agentType);
 }
 
-function emitCodexEvent(controller: ReadableStreamDefaultController<Uint8Array>, event: JsonRecord) {
+function emitCodexEvent(controller: ReadableStreamDefaultController<Uint8Array>, event: JsonRecord, provider: CodexProvider) {
   const type = asString(event.type);
   const item = asRecord(event.item);
   const itemType = asString(item.type).toLowerCase();
@@ -61,11 +62,11 @@ function emitCodexEvent(controller: ReadableStreamDefaultController<Uint8Array>,
   const agentName = codexAgentName(item);
 
   if (type === "thread.started") {
-    controller.enqueue(line({ type: "run.started", agentId: "supervisor", data: { provider: "chatgpt" } }));
+    controller.enqueue(line({ type: "run.started", agentId: "supervisor", data: { provider } }));
     return;
   }
   if (type === "turn.started") {
-    controller.enqueue(line({ type: "control.status", data: { message: "ChatGPT/Codex está coordinando el equipo…" } }));
+    controller.enqueue(line({ type: "control.status", data: { message: `${codexProviderLabel(provider)} está coordinando el equipo…` } }));
     return;
   }
   if (type === "turn.completed") {
@@ -75,7 +76,7 @@ function emitCodexEvent(controller: ReadableStreamDefaultController<Uint8Array>,
     controller.enqueue(line({
       type: "run.completed",
       agentId: "supervisor",
-      data: { totalTokens: input + output, provider: "chatgpt" },
+      data: { totalTokens: input + output, provider },
     }));
     return;
   }
@@ -185,7 +186,7 @@ export async function POST(request: Request) {
   const body = (await request.json()) as RunRequest;
   const repo = body.repo?.trim() || "rodrico16/equipo-producto-ia";
   const prompt = body.prompt?.trim();
-  const provider = body.provider === "chatgpt" ? "chatgpt" : "copilot";
+  const provider: "copilot" | CodexProvider = body.provider === "copilot" ? "copilot" : codexProviderFrom(body.provider);
   const model = body.model?.trim() || "auto";
   const reasoningEffort = body.reasoningEffort?.trim();
   const publicationMode = body.publicationMode;
@@ -233,6 +234,9 @@ export async function POST(request: Request) {
   if (provider === "chatgpt" && !chatGPTAuth) {
     return Response.json({ error: "Conectá ChatGPT para continuar" }, { status: 401 });
   }
+  if (provider === "qwen" && !qwenConfigured()) {
+    return Response.json({ error: "Configurá DASHSCOPE_API_KEY para continuar con Qwen" }, { status: 401 });
+  }
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -270,13 +274,13 @@ export async function POST(request: Request) {
         controller.enqueue(line({
           type: "control.status",
           data: {
-            message: `Creando sandbox ${provider === "chatgpt" ? "ChatGPT/Codex" : "Copilot"} para ${repo}@${checkoutBranch}`,
+            message: `Creando sandbox ${provider === "copilot" ? "Copilot" : codexProviderLabel(provider)} para ${repo}@${checkoutBranch}`,
             branch: github ? runBranch : null,
           },
         }));
 
-        if (provider === "chatgpt") {
-          sandbox = await createChatGPTWorkerSandbox(chatGPTAuth!);
+        if (provider !== "copilot") {
+          sandbox = await createChatGPTWorkerSandbox(chatGPTAuth);
 
           const workspaceResult = await sandbox.runCommand("bash", [
             "-lc",
@@ -371,7 +375,7 @@ export async function POST(request: Request) {
           throw new Error(`Could not load agent catalog: ${(await agentsClone.stderr()).slice(-1000)}`);
         }
 
-        if (provider === "chatgpt") {
+        if (provider !== "copilot") {
           const installAgents = await sandbox.runCommand({
             cmd: "bash",
             args: [
@@ -384,7 +388,7 @@ export async function POST(request: Request) {
             throw new Error(`Could not install Codex agent profiles: ${(await installAgents.stderr()).slice(-1000)}`);
           }
           const teamCount = Number((await installAgents.stdout()).trim()) || 0;
-          controller.enqueue(line({ type: "team.loaded", data: { count: teamCount, provider: "chatgpt" } }));
+          controller.enqueue(line({ type: "team.loaded", data: { count: teamCount, provider } }));
 
           const teamPrompt = [
             "You are the single primary Supervisor for this run. Coordinate directly; do not delegate to the custom agent named supervisor or create a nested supervisor layer.",
@@ -399,7 +403,8 @@ export async function POST(request: Request) {
           ].join("\n");
 
           const args = ["--sandbox", "workspace-write", "--ask-for-approval", "never"];
-          if (model && model !== "auto") args.push("--model", model);
+          const runModel = provider === "qwen" ? qwenModel(model) : model;
+          if (runModel && runModel !== "auto") args.push("--model", runModel);
           if (reasoningEffort) {
             args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
           }
@@ -417,6 +422,7 @@ export async function POST(request: Request) {
             args: ["-lc", 'export PATH="$HOME/.local/bin:$PATH"; exec codex "$@"', "codex", ...args],
             cwd: repoDir,
             detached: true,
+            env: provider === "qwen" ? qwenCodexEnv(model) : undefined,
           });
 
           let pending = "";
@@ -428,7 +434,7 @@ export async function POST(request: Request) {
             for (const part of parts) {
               if (!part.trim()) continue;
               try {
-                emitCodexEvent(controller, JSON.parse(part) as JsonRecord);
+                emitCodexEvent(controller, JSON.parse(part) as JsonRecord, provider);
               } catch {
                 diagnostics.push(part.trim());
                 controller.enqueue(line({ type: "runtime.log", data: { message: part } }));
@@ -437,7 +443,7 @@ export async function POST(request: Request) {
           }
           if (pending.trim()) {
             try {
-              emitCodexEvent(controller, JSON.parse(pending) as JsonRecord);
+              emitCodexEvent(controller, JSON.parse(pending) as JsonRecord, provider);
             } catch {
               diagnostics.push(pending.trim());
             }
@@ -601,7 +607,7 @@ export async function POST(request: Request) {
             body: [
               "## AI Product Team Control Room",
               "",
-              `Cambio implementado por el supervisor y los agentes especializados usando **${provider === "chatgpt" ? "ChatGPT / Codex" : "GitHub Copilot"}** dentro de Vercel Sandbox.`,
+              `Cambio implementado por el supervisor y los agentes especializados usando **${provider === "copilot" ? "GitHub Copilot" : codexProviderLabel(provider)}** dentro de Vercel Sandbox.`,
               "",
               "El pedido original se omitió por privacidad; revisar el diff y los checks antes de mergear.",
               "",

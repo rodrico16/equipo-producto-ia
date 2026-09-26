@@ -1,6 +1,7 @@
 import type { Sandbox } from "@vercel/sandbox";
 import { readCodexAuth } from "@/lib/chatgpt-auth-cookie";
 import { createChatGPTWorkerSandbox } from "@/lib/chatgpt-sandbox";
+import { codexProviderFrom, qwenCodexEnv, qwenConfigured, qwenModel, type CodexProvider } from "@/lib/codex-provider";
 import { getGitHubSession, requireControlRoomIdentity } from "@/lib/server-auth";
 import { finishRun, getRun, startRun } from "@/lib/run-store";
 import { validateAttachments, writeRunAttachments, type RunAttachment } from "@/lib/run-attachments";
@@ -10,6 +11,7 @@ export const maxDuration = 300;
 
 type RunMode = "chat" | "draft";
 type RunRequest = {
+  provider?: CodexProvider;
   mode?: RunMode;
   repo?: string;
   branch?: string;
@@ -38,7 +40,7 @@ function agentName(item: JsonRecord) {
   const args = asRecord(item.arguments);
   return asString(args.agentName) || asString(args.agent_name) || asString(args.agent_type) || asString(args.agentType);
 }
-function emitEvent(controller: ReadableStreamDefaultController<Uint8Array>, event: JsonRecord) {
+function emitEvent(controller: ReadableStreamDefaultController<Uint8Array>, event: JsonRecord, provider: CodexProvider) {
   const type = asString(event.type);
   const item = asRecord(event.item);
   const itemType = asString(item.type).toLowerCase();
@@ -46,7 +48,7 @@ function emitEvent(controller: ReadableStreamDefaultController<Uint8Array>, even
   const name = agentName(item);
 
   if (type === "thread.started") {
-    controller.enqueue(line({ type: "run.started", agentId: "supervisor", data: { provider: "chatgpt" } }));
+    controller.enqueue(line({ type: "run.started", agentId: "supervisor", data: { provider } }));
     return;
   }
   if (type === "turn.started") {
@@ -54,7 +56,7 @@ function emitEvent(controller: ReadableStreamDefaultController<Uint8Array>, even
     return;
   }
   if (type === "turn.completed") {
-    controller.enqueue(line({ type: "run.completed", agentId: "supervisor", data: { provider: "chatgpt" } }));
+    controller.enqueue(line({ type: "run.completed", agentId: "supervisor", data: { provider } }));
     return;
   }
   if (type === "turn.failed" || type === "error") {
@@ -118,6 +120,7 @@ function githubHeaders(token?: string) {
 
 export async function POST(request: Request) {
   const body = (await request.json()) as RunRequest;
+  const provider = codexProviderFrom(body.provider);
   const mode: RunMode = body.mode === "draft" ? "draft" : "chat";
   const prompt = body.prompt?.trim();
   const model = body.model?.trim() || "auto";
@@ -142,8 +145,9 @@ export async function POST(request: Request) {
     return Response.json({ error: "Session required" }, { status: 401 });
   }
 
-  const authJson = await readCodexAuth();
-  if (!authJson) return Response.json({ error: "Conectá ChatGPT para continuar" }, { status: 401 });
+  const authJson = provider === "chatgpt" ? await readCodexAuth() : null;
+  if (provider === "chatgpt" && !authJson) return Response.json({ error: "Conectá ChatGPT para continuar" }, { status: 401 });
+  if (provider === "qwen" && !qwenConfigured()) return Response.json({ error: "Configurá DASHSCOPE_API_KEY para usar Qwen" }, { status: 401 });
   const github = await getGitHubSession();
 
   const stream = new ReadableStream<Uint8Array>({
@@ -193,7 +197,7 @@ export async function POST(request: Request) {
           cwd,
         });
         if (install.exitCode !== 0) throw new Error(`Could not install agent profiles: ${(await install.stderr()).slice(-900)}`);
-        controller.enqueue(line({ type: "team.loaded", data: { count: Number((await install.stdout()).trim()) || 0, provider: "chatgpt" } }));
+        controller.enqueue(line({ type: "team.loaded", data: { count: Number((await install.stdout()).trim()) || 0, provider } }));
 
         const instructions = mode === "chat"
           ? [
@@ -213,7 +217,8 @@ export async function POST(request: Request) {
         const teamPrompt = [...instructions, "", `USER OBJECTIVE:\n${prompt}`, attached.context].filter(Boolean).join("\n");
 
         const args = ["--sandbox", "danger-full-access", "--ask-for-approval", "never"];
-        if (model && model !== "auto") args.push("--model", model);
+        const runModel = provider === "qwen" ? qwenModel(model) : model;
+        if (runModel && runModel !== "auto") args.push("--model", runModel);
         if (reasoningEffort) args.push("-c", `model_reasoning_effort=\"${reasoningEffort.replaceAll('"', "")}\"`);
         args.push("exec", "--json");
         for (const image of attached.images) args.push("--image", image);
@@ -226,6 +231,7 @@ export async function POST(request: Request) {
           args: ["-lc", 'export PATH="$HOME/.local/bin:$PATH"; exec codex "$@"', "codex", ...args],
           cwd,
           detached: true,
+          env: provider === "qwen" ? qwenCodexEnv(model) : undefined,
         });
 
         let pending = "";
@@ -236,12 +242,12 @@ export async function POST(request: Request) {
           pending = chunks.pop() ?? "";
           for (const chunk of chunks) {
             if (!chunk.trim()) continue;
-            try { emitEvent(controller, JSON.parse(chunk) as JsonRecord); }
+            try { emitEvent(controller, JSON.parse(chunk) as JsonRecord, provider); }
             catch { diagnostics.push(chunk.trim()); }
           }
         }
         if (pending.trim()) {
-          try { emitEvent(controller, JSON.parse(pending) as JsonRecord); }
+          try { emitEvent(controller, JSON.parse(pending) as JsonRecord, provider); }
           catch { diagnostics.push(pending.trim()); }
         }
         const result = await command.wait();
