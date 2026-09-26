@@ -10,6 +10,7 @@ import path from "node:path";
 const args = process.argv.slice(2);
 const jsonMode = args.includes("--json");
 const home = os.homedir();
+process.env.PATH = path.join(home, ".local", "bin") + path.delimiter + (process.env.PATH || "");
 const realCodex = process.env.CODEX_REAL_BIN || path.join(home, ".local", "bin", "codex-real");
 const sessionsDir = path.join(home, ".codex", "sessions");
 const startedAt = Date.now();
@@ -208,7 +209,7 @@ child.on("close", async (code, signal) => {
 
 export const CODEX_BWRAP_PREFLIGHT = String.raw`#!/usr/bin/env bash
 set -uo pipefail
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+export PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 bwrap_bin="$(command -v bwrap || true)"
 if [ -z "$bwrap_bin" ]; then
@@ -222,11 +223,6 @@ if [ -z "$permissions" ]; then
   exit 70
 fi
 
-is_setuid=0
-if (( (8#$permissions & 04000) != 0 )); then
-  is_setuid=1
-fi
-
 output_file="$(mktemp)"
 trap 'rm -f "$output_file"' EXIT
 if "$bwrap_bin" --ro-bind / / true >"$output_file" 2>&1; then
@@ -234,34 +230,10 @@ if "$bwrap_bin" --ro-bind / / true >"$output_file" 2>&1; then
 fi
 probe_output="$(cat "$output_file" 2>/dev/null || true)"
 
-if [ "$is_setuid" -eq 0 ] && printf '%s' "$probe_output" | grep -Fq 'Unexpected capabilities but not setuid'; then
-  if command -v setcap >/dev/null 2>&1; then
-    if [ "$(id -u)" -eq 0 ]; then
-      if ! setcap -r "$bwrap_bin"; then
-        echo "bwrap reports stale file capabilities, but setcap could not remove them." >&2
-        exit 70
-      fi
-    elif command -v sudo >/dev/null 2>&1; then
-      if ! sudo -n setcap -r "$bwrap_bin"; then
-        echo "bwrap reports stale file capabilities, but sudo setcap could not remove them." >&2
-        exit 70
-      fi
-    else
-      echo "bwrap reports stale file capabilities, but setcap is unavailable." >&2
-      exit 70
-    fi
-
-    if "$bwrap_bin" --ro-bind / / true >"$output_file" 2>&1; then
-      exit 0
-    fi
-    probe_output="$(cat "$output_file" 2>/dev/null || true)"
-  else
-    echo "bwrap reports stale file capabilities, but setcap is unavailable." >&2
-    exit 70
-  fi
+printf 'Codex bwrap preflight failed (mode=%s, path=%s): %s\\n' "$permissions" "$bwrap_bin" "$probe_output" >&2
+if printf '%s' "$probe_output" | grep -Fq 'Unexpected capabilities but not setuid'; then
+  echo "The user-local bwrap copy still has file capabilities; the Sandbox cannot remove them with setcap." >&2
 fi
-
-printf 'Codex bwrap preflight failed (mode=%s): %s\n' "$permissions" "$probe_output" >&2
 if printf '%s' "$probe_output" | grep -Fq 'Operation not permitted'; then
   echo "The Vercel Sandbox runtime does not allow the namespaces required by Codex. No unsandboxed fallback was started." >&2
 fi
@@ -319,10 +291,21 @@ if ! command -v bwrap >/dev/null 2>&1; then
   fi
 fi
 
-command -v bwrap >/dev/null 2>&1 || {
+system_bwrap="$(command -v bwrap || true)"
+if [ -z "$system_bwrap" ]; then
   echo "The package installation completed without providing bwrap." >&2
   exit 70
-}
+fi
+mkdir -p "$HOME/.local/bin"
+clean_bwrap="$HOME/.local/bin/bwrap"
+if [ "$system_bwrap" != "$clean_bwrap" ]; then
+  rm -f "$clean_bwrap"
+  if ! cat "$system_bwrap" > "$clean_bwrap"; then
+    echo "Could not create a clean user-local bwrap copy." >&2
+    exit 70
+  fi
+  chmod 0755 "$clean_bwrap"
+fi
 `;
 
   const result = await sandbox.runCommand("bash", ["-lc", installScript]);
