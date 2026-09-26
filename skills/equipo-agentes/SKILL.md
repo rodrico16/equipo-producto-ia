@@ -15,14 +15,17 @@ Fuente canonica del comportamiento:
 Comportamiento esperado:
 
 1. Identifica problema, usuario, restricciones y resultado esperado antes de implementar.
-2. Si el pedido es crear un producto nuevo, asume como destino por defecto la cuenta de GitHub del usuario y un proyecto de ChatGPT asociado a ese producto; si la sesión no está en ese proyecto, pide la transición mínima necesaria antes de seguir.
-3. Cuando el proyecto sea nuevo, realiza un research acotado de productos similares antes de diseñar la solución, priorizando patrones útiles y errores a evitar.
-4. Sigue la politica de tokens del repositorio: lecturas acotadas, salidas breves y una sola version canonica de cada artefacto.
-5. Si hace falta descomponer trabajo, genera mini tareas con objetivo unico, entradas minimas y criterio verificable.
-6. Cuando la solicitud sea de coordinacion del equipo, propone el rol supervisor y delega en los perfiles del proyecto segun `EQUIPO.md`.
-7. No inventes mediciones: si no hay tokens reales o porcentaje disponible de Codex, responde `no medido` o `no disponible`.
-8. Trata toda actualización del funcionamiento del equipo como una feature transversal: sincroniza la misma regla en el plugin/skill de Codex, el custom agent de VS Code y el custom agent de GitHub Copilot.
-9. Crea el commit de cada actualización del equipo y verifica el remoto antes de dejarla lista para actualizar GitHub.
+2. Si el usuario pide trabajar en un repo y hay autorizacion para operar contra GitHub, primero crea rama y Pull Request en borrador. La descripcion inicial del PR debe contener el plan dividido en commits previstos, criterios de verificacion y riesgos conocidos.
+3. Divide el trabajo del repo en commits pequenos y verificables. Al terminar cada parte, verifica, crea el commit, subelo al PR abierto y actualiza la descripcion con progreso, evidencia, cambios de plan y pendientes.
+4. Si el entorno actual no permite crear PR/commits durante la ejecucion, declara la limitacion y usa el mecanismo autorizado del Control Room para publicar al final, manteniendo el plan en la descripcion del PR.
+5. Si el pedido es crear un producto nuevo, asume como destino por defecto la cuenta de GitHub del usuario y un proyecto de ChatGPT asociado a ese producto; si la sesión no está en ese proyecto, pide la transición mínima necesaria antes de seguir.
+6. Cuando el proyecto sea nuevo, realiza un research acotado de productos similares antes de diseñar la solución, priorizando patrones útiles y errores a evitar.
+7. Sigue la politica de tokens del repositorio: lecturas acotadas, salidas breves y una sola version canonica de cada artefacto.
+8. Si hace falta descomponer trabajo, genera mini tareas con objetivo unico, entradas minimas y criterio verificable.
+9. Cuando la solicitud sea de coordinacion del equipo, propone el rol supervisor y delega en los perfiles del proyecto segun `EQUIPO.md`.
+10. No inventes mediciones: si no hay tokens reales o porcentaje disponible de Codex, responde `no medido` o `no disponible`.
+11. Trata toda actualización del funcionamiento del equipo como una feature transversal: sincroniza la misma regla en el plugin/skill de Codex, el custom agent de VS Code y el custom agent de GitHub Copilot.
+12. Crea el commit de cada actualización del equipo y verifica el remoto antes de dejarla lista para actualizar GitHub. Si ya existe un PR autorizado, sube el commit a ese PR.
 
 Skill operativo de publicación:
 

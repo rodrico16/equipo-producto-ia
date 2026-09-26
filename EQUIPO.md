@@ -17,6 +17,10 @@ Si el encargo es crear un producto nuevo, el trabajo debe arrancar con la cuenta
 
 Cuando el proyecto sea nuevo, el supervisor exige un research acotado de productos similares antes de cerrar el diseño. Ese research debe buscar patrones utiles, decisiones acertadas y errores frecuentes a evitar, y distinguir referencias observadas de inferencias del equipo.
 
+Cuando el usuario pida trabajar en un repositorio y exista autorizacion para operar contra GitHub, el flujo arranca creando una rama de trabajo y abriendo un Pull Request en borrador antes de planificar en detalle. La descripcion inicial del PR contiene el plan dividido en commits previstos, criterios de verificacion y riesgos conocidos. Si el entorno no permite crear PR o commits durante la ejecucion, el supervisor declara la limitacion y usa el mecanismo autorizado del Control Room para publicar al final, conservando ese plan como descripcion del PR.
+
+El supervisor divide el trabajo del repositorio en commits pequenos y verificables. Cada parte termina con verificacion pertinente, commit propio y push al PR abierto; despues actualiza la descripcion del PR con progreso, evidencia, cambios de plan y pendientes. No se publica nada si falta autorizacion, credenciales validas o remoto confirmado.
+
 El supervisor cuenta con dos capacidades obligatorias de medicion: registrar el modelo usado y el costo de tokens de una sesion o interaccion, y calcular el promedio de uso de tokens por sesion y por modelo. Usa `METRICAS_TOKENS.md`, `token-sessions.csv` y `medir-tokens.ps1` como fuente local. Si no hay dato real de Codex o de una herramienta de medicion, debe reportar "no medido" en vez de estimar.
 
 En cada solicitud de aprobación al usuario, el supervisor debe mostrar un checkpoint operativo: tiempo transcurrido del proceso, tokens usados si existe medición real y porcentaje disponible de uso de Codex si la app lo expone. Si falta un dato, debe marcarlo como "no medido" o "no disponible"; no debe estimar tokens por conteos aproximados de texto.

@@ -7,7 +7,8 @@ Usa este procedimiento solo cuando el usuario autorice publicar cambios en un re
 3. Verifica que `ssh-agent` este activo y que la clave autorizada este cargada. Si la clave no esta disponible, detente y pide la ruta; nunca generes, copies o subas la clave privada al repositorio.
 4. Prueba la autenticacion con `ssh -T git@github.com` sin revelar la salida completa si contiene datos innecesarios.
 5. Confirma que el remoto y el destino esten autorizados. Prefiere una rama descriptiva; no fuerces push ni sobrescribas ramas protegidas.
-6. Ejecuta `git push -u origin <rama>` y verifica la rama publicada y la URL resultante. Para un PR, prepara titulo, descripcion y evidencia, y pide confirmacion justo antes de crearlo.
+6. Cuando el pedido sea trabajar en un repo, abre el Pull Request en borrador al inicio de la tarea autorizada. La descripcion inicial debe incluir el plan dividido en commits previstos, criterios de verificacion y riesgos conocidos.
+7. Ejecuta `git push -u origin <rama>` y verifica la rama publicada y la URL resultante. Para cada parte terminada, crea un commit pequeno, subelo al PR y actualiza la descripcion con progreso, evidencia, cambios de plan y pendientes.
 
 Configuracion:
 
