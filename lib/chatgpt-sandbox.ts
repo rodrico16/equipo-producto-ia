@@ -310,10 +310,11 @@ if ! command -v bwrap >/dev/null 2>&1; then
     run_privileged apk add --no-cache bubblewrap
   else
     os_description="$(
+      PRETTY_NAME=unknown
       . /etc/os-release 2>/dev/null || true
-      printf '%s' "\${PRETTY_NAME:-unknown}"
+      printf '%s' "$PRETTY_NAME"
     )"
-    echo "bwrap is missing and no supported package manager is available in the Vercel Sandbox runtime (os=\${os_description}; checked: dnf, microdnf, yum, apt-get, apk)." >&2
+    echo "bwrap is missing and no supported package manager is available in the Vercel Sandbox runtime (os=$os_description; checked: dnf, microdnf, yum, apt-get, apk)." >&2
     exit 127
   fi
 fi
