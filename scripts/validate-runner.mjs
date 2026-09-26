@@ -27,6 +27,21 @@ try {
   }
 
   const sandboxSource = await readFile("lib/chatgpt-sandbox.ts", "utf8");
+  const installer = sandboxSource.match(/async function ensureBubblewrapInstalled\(sandbox: Sandbox\) \{([\s\S]*?)\n\}/);
+  if (!installer) throw new Error("Vercel Sandbox bubblewrap installer is missing");
+  for (const required of [
+    "dnf install -y bubblewrap",
+    "command -v bwrap",
+    "Could not provision bubblewrap in Vercel Sandbox",
+    "cdn.amazonlinux.com",
+    "al2023-repos-us-east-1-de612dc2.s3.dualstack.us-east-1.amazonaws.com",
+  ]) {
+    if (!sandboxSource.includes(required)) throw new Error(`Bubblewrap installer is missing: ${required}`);
+  }
+  const workerSetup = sandboxSource.indexOf("await ensureBubblewrapInstalled(sandbox);");
+  const bwrapCheck = sandboxSource.indexOf("await ensureCodexSandbox(sandbox);", workerSetup);
+  if (workerSetup < 0 || bwrapCheck < 0) throw new Error("Bubblewrap must be installed before the Codex preflight");
+
   const preflight = sandboxSource.match(/export const CODEX_BWRAP_PREFLIGHT = String\.raw`([\s\S]*?)`;/);
   if (!preflight) throw new Error("Codex bwrap preflight is missing");
   for (const required of [
