@@ -2,7 +2,7 @@ import { Sandbox } from "@vercel/sandbox";
 import { codexRpcSource } from "@/lib/codex-rpc-source";
 import {
   createChatGPTAuthSandbox,
-  createChatGPTWorkerSandbox,
+  createChatGPTRpcSandbox,
   readCodexAuthFile,
 } from "@/lib/chatgpt-sandbox";
 
@@ -59,7 +59,7 @@ async function runRpcInSandbox(sandbox: Sandbox, mode: "account-read" | "models"
 }
 
 export async function runCodexRpcWithAuth(authJson: string, mode: "account-read" | "models") {
-  const sandbox = await createChatGPTWorkerSandbox(authJson, 90_000);
+  const sandbox = await createChatGPTRpcSandbox(authJson);
   try {
     return await runRpcInSandbox(sandbox, mode);
   } finally {
