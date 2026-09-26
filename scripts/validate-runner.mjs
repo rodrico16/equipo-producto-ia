@@ -31,9 +31,18 @@ try {
   if (!installer) throw new Error("Vercel Sandbox bubblewrap installer is missing");
   for (const required of [
     "dnf install -y bubblewrap",
+    "microdnf install -y bubblewrap",
+    "yum install -y bubblewrap",
+    "apt-get update -qq",
+    "apt-get install -y bubblewrap",
+    "apk add --no-cache bubblewrap",
+    "no supported package manager is available",
     "command -v bwrap",
     "Could not provision bubblewrap in Vercel Sandbox",
     "cdn.amazonlinux.com",
+    "archive.ubuntu.com",
+    "deb.debian.org",
+    "dl-cdn.alpinelinux.org",
     "al2023-repos-us-east-1-de612dc2.s3.dualstack.us-east-1.amazonaws.com",
   ]) {
     if (!sandboxSource.includes(required)) throw new Error(`Bubblewrap installer is missing: ${required}`);
