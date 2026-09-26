@@ -639,6 +639,11 @@ export async function POST(request: Request) {
         }));
       } catch (error) {
         const message = presentRuntimeError(error instanceof Error ? error.message : String(error), "La ejecución del equipo falló");
+        console.error("[api/run] execution failed", {
+          runId,
+          provider,
+          message: message.slice(0, 1600),
+        });
         finishRun(runId, runOwner, message);
         if (error instanceof GitHubPublicationAuthError) {
           controller.enqueue(line({ type: "auth.required", data: { provider: "github", message, stage: error.stage, reason: error.reason } }));
