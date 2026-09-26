@@ -225,7 +225,7 @@ fi
 
 output_file="$(mktemp)"
 trap 'rm -f "$output_file"' EXIT
-if "$bwrap_bin" --ro-bind / / true >"$output_file" 2>&1; then
+if setpriv --inh-caps=-all --ambient-caps=-all -- "$bwrap_bin" --ro-bind / / true >"$output_file" 2>&1; then
   exit 0
 fi
 probe_output="$(cat "$output_file" 2>/dev/null || true)"
